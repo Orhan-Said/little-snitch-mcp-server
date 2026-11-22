@@ -141,7 +141,7 @@ Little Snitch has no command to edit one rule. Its documented route for automati
 5. It checks that every other rule is still there and that the requested change took effect.
 6. If a rule got lost or the new rule came back with a different meaning, it restores the backup and reports the failure.
 
-Fields that Little Snitch updates on its own, such as a rule's last use, do not count as differences. Numbers in the configuration go back exactly as they came, so a value the server does not understand survives the round trip.
+The check covers the rule list, the on and off state of rule groups, and the set of profiles. It does not compare preferences. Fields that Little Snitch updates on its own, such as a rule's last use, do not count as differences. Numbers in the configuration go back exactly as they came, so a value the server does not understand survives the round trip.
 
 ## Safety
 
@@ -202,7 +202,7 @@ A flag wins over its environment variable. The server stops at startup if it doe
 ## Development
 
 ```bash
-npm test               # 232 tests, about 20 seconds
+npm test               # 234 tests, about 20 seconds
 npm run typecheck
 npm run test:coverage
 ```

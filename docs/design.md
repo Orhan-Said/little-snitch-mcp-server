@@ -73,4 +73,6 @@ These need a run on a real install with terminal access on. `npm run live-check`
 - Which key holds the active profile.
 - What `restrictions` prints when terminal access is on.
 - The exact CSV that `log-traffic` prints on 6.5.
+- Whether a restore changes anything outside the rule list, such as preferences. The check after a change compares rules, rule group states and the set of profiles, and nothing else.
+- Whether `log-traffic` reads its dates as local time, which the server assumes.
 - Whether the rule shape from 6.3.3 is still accepted by `restore-model` on 6.5. `npm run live-check -- --write` tests it with one harmless rule.

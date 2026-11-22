@@ -99,12 +99,14 @@ export async function applyModelChange(
     );
   }
 
+  let strayAfterUndo: Verification['unexpected'] = [];
   try {
     const undone = await ctx.cli.restoreModel(backup.path, 'Little Snitch MCP wants to undo a rule change that did not apply cleanly.');
     const check = verifyChange(before, parseModelText(undone.modelText), { removedRefs: [], added: [] });
     if (check.missing.length > 0) {
       throw new LittleSnitchError('verification-failed', 'The backup was restored but rules are still missing.');
     }
+    strayAfterUndo = check.unexpected;
   } catch (error) {
     await ctx.store.audit({ tool: change.tool, summary: change.summary, outcome: 'not-rolled-back', backup: backup.name });
     throw new LittleSnitchError(
@@ -115,6 +117,14 @@ export async function applyModelChange(
     );
   }
   await ctx.store.audit({ tool: change.tool, summary: change.summary, outcome: 'rolled-back', backup: backup.name });
+  if (strayAfterUndo.length > 0) {
+    // Every earlier rule is back, but rules exist that were not there before: made in Little Snitch meanwhile, or the backup file was altered.
+    throw new LittleSnitchError(
+      'verification-failed',
+      `The change did not apply cleanly and the earlier configuration was put back, but ${strayAfterUndo.length} rule(s) are present that were not there before. Check them in Little Snitch.`,
+      { details: { ...problem, rolledBack: true, rulesChanged: true, presentAfterUndo: strayAfterUndo.slice(0, 20) } },
+    );
+  }
   throw new LittleSnitchError(
     'verification-failed',
     'The change did not apply cleanly, so the earlier configuration was put back. The rules are as they were before.',

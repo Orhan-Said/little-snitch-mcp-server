@@ -334,7 +334,18 @@ function registerRestoreTool(server: McpServer, ctx: Context): void {
       }
       ctx.models.put(after);
       await ctx.store.audit({ tool: 'restore_backup', summary, outcome: 'applied', method: result.method, backup: safety.name });
-      return { applied: true, restored: info.name, rulesNow: rulesOf(after).length, effect, savedBefore: safety.name, approvedThrough: result.method };
+      return {
+        applied: true,
+        restored: info.name,
+        rulesNow: rulesOf(after).length,
+        effect,
+        savedBefore: safety.name,
+        approvedThrough: result.method,
+        // The backup was read before the restore. A rule that is there now and not in what was read deserves a look.
+        ...(check.unexpected.length === 0
+          ? {}
+          : { notes: [`${check.unexpected.length} rule(s) are in the configuration that the backup did not contain.`], notInBackup: check.unexpected.slice(0, 20) }),
+      };
     }),
   );
 }

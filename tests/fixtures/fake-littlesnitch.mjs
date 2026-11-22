@@ -83,6 +83,9 @@ switch (command) {
         index < current.rules.length ? rule : { ...rule, direction: 'outgoing', approved: true, ...(rule.protocol === 'tcp' ? { protocol: '6' } : {}) },
       );
     }
+    if (behavior === 'add-stray-rule') {
+      incoming.rules = [...incoming.rules, { action: 'allow', process: 'any', 'remote-domains': 'stray.example' }];
+    }
     writeModel(incoming);
     break;
   }

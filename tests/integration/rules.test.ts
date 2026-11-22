@@ -127,6 +127,15 @@ describe('add_rule', () => {
     expect(refs(h)).toEqual(ORIGINAL_REFS);
   });
 
+  it('reports rules that are present after an undo and were not there before', async () => {
+    const h = await start({ restoreBehaviors: ['drop-first-rule', 'add-stray-rule'] });
+    const { data } = await h.call('add_rule', NEW_RULE);
+    expect(data.error.kind).toBe('verification-failed');
+    expect(data.error.message).toContain('1 rule(s) are present that were not there before');
+    expect(data.error.details).toMatchObject({ rolledBack: true, rulesChanged: true });
+    expect(data.error.details.presentAfterUndo[0].remote).toEqual({ kind: 'domains', values: ['stray.example'] });
+  });
+
   it('says plainly when the earlier configuration could not be put back, with the command to do it by hand', async () => {
     const h = await start({ restoreBehaviors: ['drop-first-rule', 'reject'] });
     const { data } = await h.call('add_rule', NEW_RULE);
@@ -233,6 +242,15 @@ describe('remove_rule and restore_backup', () => {
     expect((await h.call('restore_backup', { name: '../../etc/passwd' })).data.error.kind).toBe('invalid-input');
     expect((await h.call('restore_backup', { name: '20260101T000000Z-manual-abcdef.json' })).data.error.kind).toBe('not-found');
     expect(h.calls()).toEqual([]);
+  });
+
+  it('points out rules that are there after a restore and were not in the backup', async () => {
+    const h = await start({ restoreBehaviors: ['accept', 'add-stray-rule'] });
+    const removed = await h.call('remove_rule', { ref: ORIGINAL_REFS[1] });
+    const { data, isError } = await h.call('restore_backup', { name: removed.data.backup });
+    expect(isError).toBe(false);
+    expect(data.notes).toEqual(['1 rule(s) are in the configuration that the backup did not contain.']);
+    expect(data.notInBackup[0].remote).toEqual({ kind: 'domains', values: ['stray.example'] });
   });
 
   it('reports a restore after which rules of the backup are missing', async () => {
