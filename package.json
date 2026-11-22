@@ -1,0 +1,58 @@
+{
+  "name": "little-snitch-mcp-server",
+  "version": "0.1.0",
+  "description": "MCP server for the Little Snitch macOS firewall: read rules and traffic, and make guarded changes, through the official littlesnitch command-line tool.",
+  "license": "MIT",
+  "author": "Orhan Said",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Orhan-Said/little-snitch-mcp-server.git"
+  },
+  "homepage": "https://github.com/Orhan-Said/little-snitch-mcp-server#readme",
+  "bugs": {
+    "url": "https://github.com/Orhan-Said/little-snitch-mcp-server/issues"
+  },
+  "type": "module",
+  "bin": {
+    "little-snitch-mcp-server": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "SECURITY.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "os": [
+    "darwin"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && chmod +x dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "prepare": "npm run build",
+    "live-check": "node scripts/live-check.mjs"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "little-snitch",
+    "firewall",
+    "macos",
+    "network-monitor"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "lossless-json": "^4.3.4",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@vitest/coverage-v8": "^5.1.1",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.1"
+  }
+}

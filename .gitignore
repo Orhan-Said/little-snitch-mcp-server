@@ -1,0 +1,12 @@
+node_modules/
+dist/
+coverage/
+*.tgz
+*.mcpb
+.DS_Store
+.env
+.env.*
+# Never commit a real Little Snitch backup: it lists every app and host you use.
+*.lsbackup
+*.xpl
+live-check-output/
