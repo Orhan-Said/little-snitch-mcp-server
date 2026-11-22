@@ -9,9 +9,10 @@ First version.
 - Root access for reading through `sudo`, Touch ID for sudo, or the macOS administrator dialog.
 - Each change is approved in the macOS administrator dialog, which states the change.
 - A backup before each rule change, a comparison of the whole configuration after it, and an automatic restore when anything differs from what was intended.
-- One change at a time, with a lock across processes.
+- Profile and rule group switches get the same backup, check and undo.
+- One change at a time, with a kernel-held lock that frees itself when the server dies.
 - `npm run live-check` to test the server against the Little Snitch on your own Mac.
 
 Checked on Little Snitch 6.5 and macOS 26.6 as far as that is possible without root. The README lists what was tested how.
 
-Reviewed before release by three outside models. `docs/design.md` lists what they found and what changed.
+Reviewed twice before release by three outside models. `docs/design.md` lists what they found and what changed.

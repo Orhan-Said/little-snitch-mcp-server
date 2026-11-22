@@ -1,11 +1,13 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { assertFitsPrompt, hasHiddenCharacters, MAX_REMOTE_TEXT, prompts, remoteText, ruleText, shown } from '../src/approval.js';
+import { assertFitsPrompt, describeChanges, hasHiddenCharacters, MAX_REMOTE_TEXT, prompts, remoteText, ruleText, shown } from '../src/approval.js';
 import { createChangeQueue } from '../src/context.js';
+import { acquireKernelLock } from '../src/lock.js';
 import { validateNewRule } from '../src/model/edit.js';
-import { createStore } from '../src/store.js';
+import { numberValue } from '../src/model/json.js';
 
 const SLACK = '/Applications/Slack.app/Contents/MacOS/Slack';
 
@@ -53,11 +55,26 @@ describe('ruleText and the prompts', () => {
     expect(prompt.length).toBeLessThan(300);
   });
 
-  it('says what changes in an update, and how much a restore replaces', () => {
-    const rule = { action: 'allow', process: SLACK, 'remote-domains': 'example.com' };
-    expect(prompts.update(rule, ['action ALLOW becomes DENY', 'notes change'])).toBe(
-      `Little Snitch MCP wants to CHANGE a firewall rule (action ALLOW becomes DENY; notes change). The rule now: ALLOW connections to the domains example.com for ${SLACK}.`,
+  it('ends an update prompt with the rule as it will be, so the last action read is the one being approved', () => {
+    const before = { action: 'deny', process: SLACK, 'remote-domains': 'example.com', notes: 'old note' };
+    const after = { action: 'allow', process: SLACK, 'remote-domains': 'example.com', priority: 'high' };
+    expect(describeChanges(before, after)).toEqual(['action DENY becomes ALLOW', 'priority regular becomes high', 'the note is removed']);
+    expect(prompts.update(before, after)).toBe(
+      'Little Snitch MCP wants to CHANGE a firewall rule (action DENY becomes ALLOW; priority regular becomes high; the note is removed). ' +
+        `After the change it will be: ALLOW connections to the domains example.com for ${SLACK} (high priority).`,
     );
+  });
+
+  it('shows a note, and names the macOS user of a rule that belongs to someone else', () => {
+    const rule = { action: 'allow', process: SLACK, 'remote-domains': 'example.com', uid: numberValue(502), notes: 'approved by the owner' };
+    expect(ruleText(rule, 501)).toBe(`ALLOW connections to the domains example.com for ${SLACK}, a rule of macOS user 502, with the note "approved by the owner"`);
+    expect(ruleText(rule, 502)).toBe(`ALLOW connections to the domains example.com for ${SLACK}, with the note "approved by the owner"`);
+    expect(prompts.update(rule, { ...rule, notes: 'new text' }, 502)).toContain('(the note changes). After the change it will be:');
+    expect(prompts.update(rule, { ...rule, notes: 'new text' }, 502)).toContain('with the note "new text"');
+  });
+
+  it('states a removal and how much a restore replaces', () => {
+    const rule = { action: 'allow', process: SLACK, 'remote-domains': 'example.com' };
     expect(prompts.remove(rule)).toBe(`Little Snitch MCP wants to REMOVE a firewall rule: ALLOW connections to the domains example.com for ${SLACK}.`);
     expect(prompts.restore('20261122T160000Z-manual-abcdef.json', 3, 1, 0)).toBe(
       'Little Snitch MCP wants to REPLACE your whole Little Snitch configuration with the backup 20261122T160000Z-manual-abcdef.json: 3 rule(s) would go, 1 would come back.',
@@ -79,7 +96,8 @@ describe('remoteText and assertFitsPrompt', () => {
     expect(complete).toBe(false);
     expect(text.length).toBeLessThanOrEqual(MAX_REMOTE_TEXT);
     expect(text).toMatch(/^the hosts host-number-0\.example\.com, .* and \d+ more$/);
-    expect(() => assertFitsPrompt({ 'remote-hosts': many(60) })).toThrow(/more remotes than fit into one approval prompt/);
+    expect(() => assertFitsPrompt({ 'remote-hosts': many(60) })).toThrow(/more remotes than fit into one approval prompt.*Split it into several rules/);
+    expect(() => assertFitsPrompt({ 'remote-hosts': many(60) }, true)).toThrow(/Change or remove it in Little Snitch itself/);
   });
 });
 
@@ -93,9 +111,9 @@ describe('validateNewRule and hidden characters', () => {
 
 describe('the change lock', () => {
   let dir: string | undefined;
-  const fresh = (): string => {
+  const lockFile = (): string => {
     dir = mkdtempSync(path.join(os.tmpdir(), 'lsmcp-lock-'));
-    return path.join(dir, 'data');
+    return path.join(dir, 'Application Support', 'change.lock');
   };
   afterEach(() => {
     if (dir !== undefined) {
@@ -103,36 +121,53 @@ describe('the change lock', () => {
     }
   });
 
-  it('is held by one change at a time and can be taken again once given back', async () => {
-    const store = createStore(fresh(), () => new Date('2026-11-22T16:00:00Z'));
-    const release = await store.lock();
-    await expect(store.lock()).rejects.toMatchObject({ kind: 'busy', message: expect.stringContaining('2026-11-22T16:00:00.000Z') });
+  it('is held by one taker at a time and can be taken again once given back', async () => {
+    const file = lockFile();
+    const release = await acquireKernelLock(file);
+    expect(existsSync(file)).toBe(true);
+    await expect(acquireKernelLock(file)).rejects.toMatchObject({ kind: 'busy', message: expect.stringContaining('Another change to Little Snitch is in progress') });
     await release();
-    const again = await store.lock();
+    const again = await acquireKernelLock(file);
+    await again();
     await again();
   });
 
-  it('is refused while another running server holds it', async () => {
-    const dataDir = fresh();
-    const store = createStore(dataDir, () => new Date('2026-11-22T16:00:00Z'));
-    await (await store.lock())();
-    writeFileSync(path.join(dataDir, 'change.lock'), JSON.stringify({ pid: process.ppid, since: '2026-11-22T15:59:00.000Z' }));
-    await expect(store.lock()).rejects.toMatchObject({ kind: 'busy' });
+  it('lets exactly one of many simultaneous takers through', async () => {
+    const file = lockFile();
+    const attempts = await Promise.allSettled(Array.from({ length: 12 }, () => acquireKernelLock(file)));
+    const winners = attempts.filter((attempt) => attempt.status === 'fulfilled');
+    expect(winners).toHaveLength(1);
+    expect(attempts.filter((attempt) => attempt.status === 'rejected')).toHaveLength(11);
+    await (winners[0] as PromiseFulfilledResult<() => Promise<void>>).value();
   });
 
-  it('is taken over from a server that is gone or that held it far too long', async () => {
-    const dataDir = fresh();
-    const store = createStore(dataDir, () => new Date('2026-11-22T16:00:00Z'));
-    await (await store.lock())();
-    const lockFile = path.join(dataDir, 'change.lock');
-    writeFileSync(lockFile, JSON.stringify({ pid: 2_147_483_646, since: '2026-11-22T15:59:00.000Z' }));
-    await (await store.lock())();
-    writeFileSync(lockFile, JSON.stringify({ pid: process.pid, since: '2026-11-22T15:00:00.000Z' }));
-    await (await store.lock())();
-    writeFileSync(lockFile, 'not json');
-    const release = await store.lock();
-    expect(JSON.parse(readFileSync(lockFile, 'utf8'))).toEqual({ pid: process.pid, since: '2026-11-22T16:00:00.000Z' });
-    await release();
+  it('frees itself when the process that holds it dies, with nothing to clean up', async () => {
+    const file = lockFile();
+    // Another process holds the lock the same way the server does: lockf runs cat on a pipe that the process keeps open.
+    const script =
+      `const { spawn } = require('node:child_process');` +
+      `const child = spawn('/usr/bin/lockf', ['-k', '-t', '0', ${JSON.stringify(file)}, '/bin/sh', '-c', 'echo held; exec /bin/cat >/dev/null'], { stdio: ['pipe', 'pipe', 'inherit'] });` +
+      `child.stdout.on('data', (chunk) => { if (String(chunk).includes('held')) console.log('holding'); });` +
+      `child.on('close', () => process.exit(1));` +
+      `setInterval(() => {}, 1000);`;
+    mkdirSync(path.dirname(file), { recursive: true });
+    const holder = spawn(process.execPath, ['-e', script], { stdio: ['ignore', 'pipe', 'inherit'] });
+    await new Promise<void>((resolve, reject) => {
+      holder.stdout.on('data', (chunk: Buffer) => (chunk.toString().includes('holding') ? resolve() : undefined));
+      holder.on('close', () => reject(new Error('the holder ended before it took the lock')));
+    });
+    await expect(acquireKernelLock(file)).rejects.toMatchObject({ kind: 'busy' });
+    holder.kill('SIGKILL');
+    await new Promise((resolve) => holder.on('close', resolve));
+    let release: (() => Promise<void>) | undefined;
+    for (let attempt = 0; attempt < 40 && release === undefined; attempt += 1) {
+      release = await acquireKernelLock(file).catch(() => undefined);
+      if (release === undefined) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
+    expect(release).toBeTypeOf('function');
+    await release?.();
   });
 });
 
@@ -140,14 +175,12 @@ describe('createChangeQueue', () => {
   it('runs changes one after another, in the order they were asked for', async () => {
     const events: string[] = [];
     let held = false;
-    const queue = createChangeQueue({
-      lock: async () => {
-        expect(held).toBe(false);
-        held = true;
-        return async () => {
-          held = false;
-        };
-      },
+    const queue = createChangeQueue(async () => {
+      expect(held).toBe(false);
+      held = true;
+      return async () => {
+        held = false;
+      };
     });
     const change = (name: string, ms: number) =>
       queue.run(async () => {
@@ -163,7 +196,9 @@ describe('createChangeQueue', () => {
 
   it('gives the lock back and carries on after a change that failed', async () => {
     let releases = 0;
-    const queue = createChangeQueue({ lock: async () => async () => { releases += 1; } });
+    const queue = createChangeQueue(async () => async () => {
+      releases += 1;
+    });
     await expect(queue.run(async () => { throw new Error('boom'); })).rejects.toThrow('boom');
     expect(await queue.run(async () => 'next')).toBe('next');
     expect(releases).toBe(2);
@@ -171,8 +206,13 @@ describe('createChangeQueue', () => {
 
   it('does not start a change while another server holds the lock', async () => {
     let started = false;
-    const queue = createChangeQueue({ lock: async () => { throw new Error('busy'); } });
+    const queue = createChangeQueue(async () => { throw new Error('busy'); });
     await expect(queue.run(async () => { started = true; })).rejects.toThrow('busy');
     expect(started).toBe(false);
+  });
+
+  it('keeps the result of a finished change when giving the lock back fails', async () => {
+    const queue = createChangeQueue(async () => async () => { throw new Error('could not release'); });
+    expect(await queue.run(async () => 'done')).toBe('done');
   });
 });

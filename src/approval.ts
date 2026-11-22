@@ -1,5 +1,5 @@
 import { LittleSnitchError } from './errors.js';
-import { asString, type JsonObject } from './model/json.js';
+import { asNumber, asString, type JsonObject } from './model/json.js';
 import { remoteOf } from './model/rules.js';
 
 /**
@@ -64,8 +64,11 @@ export function remoteText(rule: JsonObject): { readonly text: string; readonly 
   return { text: `${label} ${fitting.join(', ')} and ${values.length - fitting.length} more`, complete: false };
 }
 
-/** One rule as a sentence fragment, action and remote first: "DENY connections to the domains x for /path/to/app". */
-export function ruleText(rule: JsonObject): string {
+/**
+ * One rule as a sentence fragment, action and remote first: "DENY connections to the domains x for /path/to/app".
+ * A note is shown, and so is the rule's macOS user when it is not `viewerUid`, the user this server runs as.
+ */
+export function ruleText(rule: JsonObject, viewerUid?: number): string {
   const action = (asString(rule['action']) ?? 'unknown action').toUpperCase();
   const direction = asString(rule['direction']) === 'incoming' ? 'incoming connections from' : 'connections to';
   const process = asString(rule['process']);
@@ -77,29 +80,50 @@ export function ruleText(rule: JsonObject): string {
     ...(protocol === undefined ? [] : [`protocol ${shown(protocol, 20)}`]),
     ...(asString(rule['priority']) === 'high' ? ['high priority'] : []),
   ];
+  const notes = asString(rule['notes']);
+  const uid = asNumber(rule['uid']);
   return (
     `${shown(action, 20)} ${direction} ${remoteText(rule).text} ` +
     `for ${process === 'any' ? 'ANY process' : process === undefined ? 'an unspecified process' : shown(process)}` +
     (via === undefined ? '' : ` via ${shown(via)}`) +
-    (extras.length === 0 ? '' : ` (${extras.join(', ')})`)
+    (extras.length === 0 ? '' : ` (${extras.join(', ')})`) +
+    (uid === undefined || viewerUid === undefined || uid === viewerUid ? '' : `, a rule of macOS user ${uid}`) +
+    (notes === undefined || notes === '' ? '' : `, with the note "${shown(notes, 120)}"`)
   );
 }
 
-/** Refuses a new rule whose remote list is too long to show whole in the approval prompt. */
-export function assertFitsPrompt(rule: JsonObject): void {
+/** What an update changes, in words, for the prompt and the change log. */
+export function describeChanges(before: JsonObject, after: JsonObject): readonly string[] {
+  const was = (key: string, fallback: string): string => asString(before[key]) ?? fallback;
+  const now = (key: string, fallback: string): string => asString(after[key]) ?? fallback;
+  return [
+    ...(was('action', '') === now('action', '') ? [] : [`action ${shown(was('action', 'none'), 20).toUpperCase()} becomes ${shown(now('action', 'none'), 20).toUpperCase()}`]),
+    ...(was('priority', 'regular') === now('priority', 'regular') ? [] : [`priority ${shown(was('priority', 'regular'), 20)} becomes ${shown(now('priority', 'regular'), 20)}`]),
+    ...(was('notes', '') === now('notes', '') ? [] : [now('notes', '') === '' ? 'the note is removed' : 'the note changes']),
+  ];
+}
+
+/**
+ * Refuses a rule whose remote list is too long to show whole in the approval
+ * prompt. This applies to a new rule and to changing or removing an existing
+ * one: nobody can approve knowingly what they cannot see.
+ */
+export function assertFitsPrompt(rule: JsonObject, existing: boolean = false): void {
   if (!remoteText(rule).complete) {
     throw new LittleSnitchError(
       'invalid-input',
-      `This rule names more remotes than fit into one approval prompt (${MAX_REMOTE_TEXT} characters), so you could not see all of them before approving. Split it into several rules.`,
+      `This rule names more remotes than fit into one approval prompt (${MAX_REMOTE_TEXT} characters), so you could not see all of them before approving. ` +
+        (existing ? 'Change or remove it in Little Snitch itself.' : 'Split it into several rules.'),
     );
   }
 }
 
 export const prompts = {
-  add: (rule: JsonObject): string => `Little Snitch MCP wants to ADD a firewall rule: ${ruleText(rule)}.`,
-  remove: (rule: JsonObject): string => `Little Snitch MCP wants to REMOVE a firewall rule: ${ruleText(rule)}.`,
-  update: (before: JsonObject, changes: readonly string[]): string =>
-    `Little Snitch MCP wants to CHANGE a firewall rule (${changes.join('; ')}). The rule now: ${ruleText(before)}.`,
+  add: (rule: JsonObject, viewerUid?: number): string => `Little Snitch MCP wants to ADD a firewall rule: ${ruleText(rule, viewerUid)}.`,
+  remove: (rule: JsonObject, viewerUid?: number): string => `Little Snitch MCP wants to REMOVE a firewall rule: ${ruleText(rule, viewerUid)}.`,
+  /** States what changes, and then the rule as it will be afterwards, so the last thing read is what is being approved. */
+  update: (before: JsonObject, after: JsonObject, viewerUid?: number): string =>
+    `Little Snitch MCP wants to CHANGE a firewall rule (${describeChanges(before, after).join('; ')}). After the change it will be: ${ruleText(after, viewerUid)}.`,
   restore: (name: string, removed: number, added: number, otherParts: number): string =>
     `Little Snitch MCP wants to REPLACE your whole Little Snitch configuration with the backup ${shown(name, 80)}: ` +
     `${removed} rule(s) would go, ${added} would come back` +

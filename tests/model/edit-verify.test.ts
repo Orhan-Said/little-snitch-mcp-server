@@ -259,6 +259,15 @@ describe('compareModels', () => {
     expect(kept.notRemoved).toHaveLength(1);
   });
 
+  it('notices a rule-list entry that is not a rule object when it disappears or appears', () => {
+    const withOpaque = parseModelText('{"rules":[{"action":"allow","process":"any","remote":"bonjour"},"opaque-entry",42]}');
+    const without = parseModelText('{"rules":[{"action":"allow","process":"any","remote":"bonjour"}]}');
+    expect(compareModels(withOpaque, reexport(withOpaque)).ok).toBe(true);
+    expect(compareModels(withOpaque, without)).toMatchObject({ ok: false, changedSections: ['rules (entries that are not rule objects)'] });
+    expect(compareModels(without, withOpaque).ok).toBe(false);
+    expect(compareModels(withOpaque, parseModelText('{"rules":[{"action":"allow","process":"any","remote":"bonjour"},"opaque-entry",43]}')).ok).toBe(false);
+  });
+
   it('counts identical rules, so a lost twin is noticed', () => {
     const twins = parseModelText('{"rules":[{"action":"allow","process":"any","remote":"bonjour"},{"action":"allow","process":"any","remote":"bonjour"}]}');
     const one = parseModelText('{"rules":[{"action":"allow","process":"any","remote":"bonjour"}]}');

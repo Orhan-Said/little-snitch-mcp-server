@@ -51,6 +51,27 @@ if (!settings.terminalAccess) {
 
 const BUILTIN_NAMES = { builtinMacOSServices: 'macOS Services', builtinICloudServices: 'iCloud Services' };
 
+/** What a profile or rule group switch does besides the switch itself, when a test asks for it. */
+const applySwitch = (model) => {
+  const sideEffect = (settings.switchSideEffects ?? []).shift() ?? 'none';
+  settings.exportFailures = settings.failExportsAfterSwitch ?? 0;
+  settings.failExportsAfterSwitch = 0;
+  saveSettings();
+  if (settings.switchesDoNothing === true) {
+    return;
+  }
+  if (sideEffect === 'drop-first-rule') {
+    model.rules = model.rules.slice(1);
+  }
+  if (sideEffect === 'switch-other-group') {
+    model.groups.aaaaad = { ...model.groups.aaaaad, isActive: !model.groups.aaaaad.isActive };
+  }
+  if (sideEffect === 'flip-preference') {
+    model.globalDefaults = { ...model.globalDefaults, allowCommandLineAccess: false };
+  }
+  writeModel(model);
+};
+
 switch (command) {
   case 'export-model': {
     if ((settings.exportFailures ?? 0) > 0) {
@@ -132,9 +153,7 @@ switch (command) {
     } else {
       fail(64, 'usage: littlesnitch profile [-dh] [-a <profile name>]');
     }
-    if (settings.switchesDoNothing !== true) {
-      writeModel(model);
-    }
+    applySwitch(model);
     break;
   }
   case 'rulegroup': {
@@ -144,9 +163,7 @@ switch (command) {
       fail(1, `Rule group or blocklist "${rest[1]}" not found.`); // message recorded by torsday/little-snitch-mcp
     }
     entry.isActive = rest[0] === '--enable';
-    if (settings.switchesDoNothing !== true) {
-      writeModel(model);
-    }
+    applySwitch(model);
     break;
   }
   case 'list-preferences': {

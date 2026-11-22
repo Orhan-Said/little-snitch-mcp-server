@@ -1,5 +1,5 @@
 import { groupDisplayNames, summarizeGroups } from './groups.js';
-import { canonical, rulesOf, type JsonObject } from './json.js';
+import { canonical, isObject, rawRules, rulesOf, type JsonObject } from './json.js';
 import { summarizeProfiles } from './profiles.js';
 import { ruleRef, summarizeRule, tolerantKey, type RuleSummary } from './rules.js';
 
@@ -84,6 +84,13 @@ function changedSections(expected: JsonObject, actual: JsonObject): readonly str
   return keys.filter((key) => canonical(expected[key]) !== canonical(actual[key]));
 }
 
+/** Entries of the rule list that are not rule objects. This server cannot read them, so they must simply be the same, one for one. */
+function opaqueRuleEntries(model: JsonObject): string {
+  return JSON.stringify(rawRules(model).filter((entry) => !isObject(entry)).map((entry) => canonical(entry)).sort());
+}
+
+export const OPAQUE_RULE_ENTRIES = 'rules (entries that are not rule objects)';
+
 /**
  * Compares the configuration Little Snitch reports with the one that was
  * intended. The comparison is strict: a rule nobody asked for, a field of a
@@ -130,7 +137,10 @@ export function compareModels(expected: JsonObject, actual: JsonObject, options:
   }
   const notRemoved = extras.filter((rule) => removed.has(ruleRef(rule)));
   const unexpected = extras.filter((rule) => !removed.has(ruleRef(rule)));
-  const sections = changedSections(expected, actual);
+  const sections = [
+    ...changedSections(expected, actual),
+    ...(opaqueRuleEntries(expected) === opaqueRuleEntries(actual) ? [] : [OPAQUE_RULE_ENTRIES]),
+  ];
 
   return {
     ok: missing.length === 0 && unexpected.length === 0 && notApplied.length === 0 && notRemoved.length === 0 && sections.length === 0,

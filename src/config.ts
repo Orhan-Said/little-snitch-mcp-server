@@ -17,6 +17,11 @@ export interface Config {
   /** When true, a change does not force a fresh Touch ID or password approval. */
   readonly unattendedWrites: boolean;
   readonly dataDir: string;
+  /**
+   * The lock that keeps two changes apart. It has one fixed place per macOS user,
+   * so two servers started with different data folders still share it.
+   */
+  readonly lockFile: string;
   readonly modelCacheMs: number;
   /** Time allowed for a command that may wait on a person at an approval prompt. */
   readonly interactiveTimeoutMs: number;
@@ -148,6 +153,7 @@ export function loadConfig(env: Readonly<Record<string, string | undefined>>, ar
       flags.unattendedWrites ?? env['LITTLE_SNITCH_MCP_UNATTENDED_WRITES'],
     ),
     dataDir,
+    lockFile: path.join(homeDir, 'Library', 'Application Support', 'little-snitch-mcp-server', 'change.lock'),
     modelCacheMs: 15_000,
     interactiveTimeoutMs: 5 * 60_000,
     commandTimeoutMs: 60_000,
@@ -166,8 +172,9 @@ Options (each also has an environment variable):
                           LITTLE_SNITCH_MCP_ALLOW
   --elevation <mode>      How root access is obtained: auto (default), sudo, dialog, none.
                           LITTLE_SNITCH_MCP_ELEVATION
-  --unattended-writes     Do not force a fresh Touch ID or password approval for
-                          each change. LITTLE_SNITCH_MCP_UNATTENDED_WRITES
+  --unattended-writes     Let changes run through sudo like reads, without the
+                          administrator dialog. No effect with elevation "dialog".
+                          LITTLE_SNITCH_MCP_UNATTENDED_WRITES
   --cli-path <path>       Path of the littlesnitch tool. LITTLE_SNITCH_MCP_CLI_PATH
   --data-dir <path>       Where backups and the change log are kept.
                           LITTLE_SNITCH_MCP_DATA_DIR

@@ -163,6 +163,13 @@ describe('get_status across setups', () => {
     expect(result.rootAccess.approvalForChanges).toBe('the macOS administrator password dialog, for each change');
   });
 
+  it('says that unattended writes have no effect with elevation "dialog"', async () => {
+    const result = await status(['--elevation', 'dialog', '--allow', 'rules', '--unattended-writes'], { touchId: true, sudoWorks: true });
+    expect(result.rootAccess.approvalForChanges).toBe(
+      'the macOS administrator password dialog, for each change (unattended writes have no effect with elevation "dialog")',
+    );
+  });
+
   it('flags a tool that fails the signature check and does not run it through sudo', async () => {
     const result = await status([], { touchId: false, sudoWorks: true, signed: false });
     expect(result.littleSnitch.signature).toBe('INVALID');

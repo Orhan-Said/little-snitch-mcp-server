@@ -2,8 +2,10 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { summarizeGroups } from '../../src/model/groups.js';
+import { rulesOf } from '../../src/model/json.js';
 import { activeProfile } from '../../src/model/profiles.js';
-import { sampleModelText } from '../fixtures/model.js';
+import { ruleRef } from '../../src/model/rules.js';
+import { sampleModel, sampleModelText } from '../fixtures/model.js';
 import { startHarness, type Harness, type HarnessOptions } from '../helpers/harness.js';
 
 let harness: Harness | undefined;
@@ -16,19 +18,30 @@ afterEach(async () => {
   harness = undefined;
 });
 
+const ORIGINAL_REFS = rulesOf(sampleModel()).map(ruleRef);
 const active = (h: Harness): string | null | undefined => activeProfile(h.model(), 501).name;
 const groupState = (h: Harness, id: string): boolean | null | undefined => summarizeGroups(h.model()).find((group) => group.id === id)?.active;
+const commands = (h: Harness): string[] => h.calls().map((call) => call[0] ?? '');
+const refs = (h: Harness): string[] => rulesOf(h.model()).map(ruleRef);
+const auditLog = (h: Harness): Array<Record<string, string>> =>
+  readFileSync(path.join(h.dataDir, 'changes.log'), 'utf8')
+    .split('\n')
+    .filter((line) => line !== '')
+    .map((line) => JSON.parse(line) as Record<string, string>);
 
 describe('set_active_profile', () => {
-  it('activates a profile by its exact name and confirms it by reading back', async () => {
+  it('activates a profile by its exact name, from a fresh read, with a backup, and confirms it by reading back', async () => {
     const h = await start();
     const { data, isError } = await h.call('set_active_profile', { profile: 'Home' });
     expect(isError).toBe(false);
-    expect(data).toEqual({ applied: true, activeProfile: 'Home', confirmedByReadBack: true, approvedThrough: 'direct' });
+    expect(data).toEqual({ applied: true, activeProfile: 'Home', confirmedByReadBack: true, partsThatChanged: ['users'], approvedThrough: 'direct' });
     expect(active(h)).toBe('Home');
     expect(h.calls()).toEqual([['export-model'], ['profile', '--activate', 'Home'], ['export-model']]);
-    const log = readFileSync(path.join(h.dataDir, 'changes.log'), 'utf8');
-    expect(JSON.parse(log.trim())).toMatchObject({ tool: 'set_active_profile', outcome: 'applied', summary: 'activate profile "Home"' });
+    expect(auditLog(h)).toMatchObject([{ tool: 'set_active_profile', outcome: 'applied', summary: 'activate profile "Home"' }]);
+    const backups = (await h.call('list_backups')).data.backups;
+    expect(backups).toHaveLength(1);
+    expect(backups[0].name).toMatch(/before-set-active-profile/);
+    expect(readFileSync(path.join(h.dataDir, 'backups', backups[0].name), 'utf8')).toBe(sampleModelText());
   });
 
   it('deactivates all profiles when given null', async () => {
@@ -36,7 +49,7 @@ describe('set_active_profile', () => {
     const { data } = await h.call('set_active_profile', { profile: null });
     expect(data).toMatchObject({ applied: true, activeProfile: null, confirmedByReadBack: true });
     expect(active(h)).toBeNull();
-    expect(h.calls()).toEqual([['profile', '--deactivate-all'], ['export-model']]);
+    expect(h.calls()).toEqual([['export-model'], ['profile', '--deactivate-all'], ['export-model']]);
   });
 
   it('does not run anything for a name that is not a profile', async () => {
@@ -55,37 +68,63 @@ describe('set_active_profile', () => {
     expect(h.calls()).toEqual([['export-model']]);
   });
 
-  it('reports a switch that Little Snitch accepted but that did not take effect', async () => {
-    const h = await start({ switchesDoNothing: true });
-    const { data } = await h.call('set_active_profile', { profile: 'Home' });
-    expect(data.error.kind).toBe('verification-failed');
-    expect(data.error.message).toContain('reads as "Work"');
-  });
-
-  it('says so when it cannot double-check the result', async () => {
-    // The fake keeps its configuration as it is here, the way a Little Snitch that stores the active profile elsewhere would look.
-    const h = await start({ modelText: sampleModelText().replace('"activeProfile": "p2"', '"somethingElse": 1'), switchesDoNothing: true });
-    const { data } = await h.call('set_active_profile', { profile: null });
-    expect(data.applied).toBe(true);
-    expect(data.confirmedByReadBack).toBe(false);
-    expect(data.note).toContain('was not double-checked');
-  });
-
-  it('reuses a configuration it has just read to look the name up', async () => {
+  it('reads the configuration afresh every time, never from an older copy', async () => {
     const h = await start();
     await h.call('list_profiles');
     await h.call('set_active_profile', { profile: 'Home' });
-    expect(h.calls().map((call) => call[0])).toEqual(['export-model', 'profile', 'export-model']);
+    expect(commands(h)).toEqual(['export-model', 'export-model', 'profile', 'export-model']);
+  });
+
+  it('reports a switch that Little Snitch accepted but that changed nothing', async () => {
+    const h = await start({ switchesDoNothing: true });
+    const { data } = await h.call('set_active_profile', { profile: 'Home' });
+    expect(data.error.kind).toBe('verification-failed');
+    expect(data.error.message).toContain('the configuration is the same as before');
+    expect(data.error.details).toMatchObject({ rolledBack: false, configurationAsBefore: true });
+    expect(commands(h)).toEqual(['export-model', 'profile', 'export-model']);
+  });
+
+  it('says "accepted", not "applied", when the configuration does not tell which profile is active', async () => {
+    // The fake keeps its configuration as it is here, the way a Little Snitch that stores the active profile elsewhere would look.
+    const h = await start({ modelText: sampleModelText().replace('"activeProfile": "p2"', '"somethingElse": 1'), switchesDoNothing: true });
+    const { data, isError } = await h.call('set_active_profile', { profile: null });
+    expect(isError).toBe(false);
+    expect(data.applied).toBeUndefined();
+    expect(data).toMatchObject({ accepted: true, activeProfile: null, confirmedByReadBack: false, partsThatChanged: [] });
+    expect(data.note).toContain('the switch itself is not confirmed');
+  });
+
+  it('puts the earlier configuration back when the switch also lost a rule', async () => {
+    const h = await start({ switchSideEffects: ['drop-first-rule'] });
+    const { data } = await h.call('set_active_profile', { profile: 'Home' });
+    expect(data.error.kind).toBe('verification-failed');
+    expect(data.error.message).toContain('is not what the switch should produce (1 rule(s) missing; these parts differ: users)');
+    expect(data.error.message).toContain('The earlier configuration was put back and checked');
+    expect(data.error.details).toMatchObject({ rolledBack: true, configurationAsBefore: true });
+    expect(commands(h)).toEqual(['export-model', 'profile', 'export-model', 'restore-model', 'export-model']);
+    expect(refs(h)).toEqual(ORIGINAL_REFS);
+    expect(active(h)).toBe('Work');
+    expect(auditLog(h)).toMatchObject([{ outcome: 'rolled-back' }]);
+  });
+
+  it('reads again and undoes the switch when the read-back failed', async () => {
+    const h = await start({ failExportsAfterSwitch: 1 });
+    const { data } = await h.call('set_active_profile', { profile: 'Home' });
+    expect(data.error.kind).toBe('verification-failed');
+    expect(data.error.message).toContain('could not be read back');
+    expect(data.error.details).toMatchObject({ rolledBack: true, configurationAsBefore: true });
+    expect(commands(h)).toEqual(['export-model', 'profile', 'export-model', 'export-model', 'restore-model', 'export-model']);
+    expect(active(h)).toBe('Work');
   });
 });
 
 describe('set_rule_group_enabled', () => {
-  it('switches a built-in group on by the name Little Snitch shows', async () => {
+  it('switches a built-in group on by the name Little Snitch shows, and checks the whole configuration', async () => {
     const h = await start();
     const { data } = await h.call('set_rule_group_enabled', { group: 'iCloud Services', enabled: true });
     expect(data).toEqual({ applied: true, group: { id: 'aaaaac', name: 'iCloud Services' }, enabled: true, confirmedByReadBack: true, approvedThrough: 'direct' });
     expect(groupState(h, 'aaaaac')).toBe(true);
-    expect(h.calls()[1]).toEqual(['rulegroup', '--enable', 'iCloud Services']);
+    expect(h.calls()).toEqual([['export-model'], ['rulegroup', '--enable', 'iCloud Services'], ['export-model']]);
   });
 
   it('switches a group off by its id', async () => {
@@ -95,11 +134,19 @@ describe('set_rule_group_enabled', () => {
     expect(h.calls()[1]).toEqual(['rulegroup', '--disable', 'Work rules']);
   });
 
-  it('does not guess at a misspelled group', async () => {
+  it('runs nothing when the group is already in the wanted state', async () => {
     const h = await start();
-    const { data } = await h.call('set_rule_group_enabled', { group: 'iCloud Service', enabled: false });
-    expect(data.error.kind).toBe('not-found');
+    const { data, isError } = await h.call('set_rule_group_enabled', { group: 'macOS Services', enabled: true });
+    expect(isError).toBe(false);
+    expect(data).toMatchObject({ applied: false, alreadyInState: true, group: { id: 'aaaaab', name: 'macOS Services' } });
     expect(h.calls()).toEqual([['export-model']]);
+  });
+
+  it('does not guess at a misspelled group or one in another letter case', async () => {
+    const h = await start();
+    expect((await h.call('set_rule_group_enabled', { group: 'iCloud Service', enabled: true })).data.error.kind).toBe('not-found');
+    expect((await h.call('set_rule_group_enabled', { group: 'icloud services', enabled: true })).data.error.kind).toBe('not-found');
+    expect(commands(h)).toEqual(['export-model', 'export-model']);
   });
 
   it('explains that a built-in group without a known name cannot be switched from here', async () => {
@@ -110,10 +157,37 @@ describe('set_rule_group_enabled', () => {
     expect(h.calls()).toEqual([['export-model']]);
   });
 
-  it('reports a switch that did not take effect', async () => {
+  it('refuses a name that two groups share, since Little Snitch takes a name only', async () => {
+    const h = await start({ modelText: sampleModelText().replace('"kind": "builtinSomethingNew", "name": null', '"kind": "local", "name": "Work rules"') });
+    const { data } = await h.call('set_rule_group_enabled', { group: 'aaaaad', enabled: false });
+    expect(data.error.kind).toBe('ambiguous');
+    expect(h.calls()).toEqual([['export-model']]);
+  });
+
+  it('reports a switch that changed nothing', async () => {
     const h = await start({ switchesDoNothing: true });
     const { data } = await h.call('set_rule_group_enabled', { group: 'iCloud Services', enabled: true });
     expect(data.error.kind).toBe('verification-failed');
+    expect(data.error.details).toMatchObject({ rolledBack: false, configurationAsBefore: true });
+    expect(groupState(h, 'aaaaac')).toBe(false);
+  });
+
+  it('puts the earlier configuration back when another group was switched as well', async () => {
+    const h = await start({ switchSideEffects: ['switch-other-group'] });
+    const { data } = await h.call('set_rule_group_enabled', { group: 'iCloud Services', enabled: true });
+    expect(data.error.kind).toBe('verification-failed');
+    expect(data.error.details.otherChanges).toEqual(['The rule group "Work rules" is off and should be on.']);
+    expect(data.error.details).toMatchObject({ rolledBack: true, configurationAsBefore: true });
+    expect(groupState(h, 'aaaaac')).toBe(false);
+    expect(groupState(h, 'aaaaad')).toBe(true);
+  });
+
+  it('puts the earlier configuration back when a preference changed as well', async () => {
+    const h = await start({ switchSideEffects: ['flip-preference'] });
+    const { data } = await h.call('set_rule_group_enabled', { group: 'iCloud Services', enabled: true });
+    expect(data.error.details.changedSections).toEqual(['globalDefaults']);
+    expect(data.error.details).toMatchObject({ rolledBack: true });
+    expect(h.modelText()).toContain('"allowCommandLineAccess":true');
     expect(groupState(h, 'aaaaac')).toBe(false);
   });
 });

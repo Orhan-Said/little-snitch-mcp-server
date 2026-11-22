@@ -81,9 +81,27 @@ Before the first release, three models from other vendors reviewed the repositor
 | "Rolled back" was reported without a full comparison | The undo is compared with the configuration from before, in full. |
 | Group names matched without regard to letter case | Exact match only. |
 
-One finding went further than the reviewers asked: the file to restore is now copied into a folder only root can enter and checked against a checksum before Little Snitch reads it.
+One change went further than the reviewers asked: the file to restore is now copied into a folder only root can enter and checked against a checksum before Little Snitch reads it. The second round of that review, in which the reviewers examine each other's findings, did not complete.
 
-The second round of that review, in which the reviewers examine each other's findings, did not complete.
+The same three models then reviewed the fixed code, this time in both rounds. All three ruled "fix first". They confirmed that the first set of fixes works as described, and found thirteen things in the new code. None was refuted in the second round.
+
+| Finding | Change |
+|---|---|
+| Two processes could both take a stale lock file, and a live holder lost it after 20 minutes | The lock is held by the kernel through `/usr/bin/lockf`. It frees itself when the holder dies and is never taken over. |
+| A logging or cleanup failure after a verified change came back as an error | These can no longer fail a change. The result carries a warning. |
+| Prompts for changing or removing an existing rule cut long remote lists | Such a rule cannot be changed or removed through the server. |
+| Saving the copy before a restore could prune the backup being restored | The target is exempt from pruning, and root restores the content already read, from a fresh file. |
+| A timed-out dialog could leave the root command running while recovery started a second restore | After a timeout nothing further is started. The state is reported as unknown. |
+| Profile and group switches had no backup and no undo, and reported "applied" without a confirming read-back | They get a backup, a check and an undo. An unconfirmed profile switch answers "accepted". |
+| A group switch resolved the name from a copy up to ten minutes old | The group is resolved from a read made inside the lock. |
+| The comparison ignored rule-list entries that are not objects | Every entry of the rule list is compared. |
+| The manual restore command was not shell-quoted | Every path in it is quoted. |
+| The update prompt showed the old action last, and no prompt showed notes or a foreign user id | The prompt ends with the rule as it will be, and shows the note and the user. |
+| The docs said `--unattended-writes` always removes the approval | The docs and the status tool say it has no effect in dialog mode. |
+| The rule match ignored remote-list entries that are not text | A list with such an entry must match exactly. |
+| `create_backup` could prune a restore target | A restore no longer depends on the backup file once it has been read. |
+
+At this point the reviewers' remaining objections are premises nobody can check without a real Little Snitch: whether the root script works under a real administrator dialog, whether the list of ignored sections and the rule match fit version 6.5, whether macOS shows a long prompt whole, and what a killed dialog leaves running. A third review cannot settle those. A run of `npm run live-check -- --write` can.
 
 ## Open questions
 
@@ -94,5 +112,7 @@ These need a run on a real install with terminal access on. `npm run live-check`
 - The exact CSV that `log-traffic` prints on 6.5.
 - Whether a restore changes anything outside the rule list on its own, such as preferences or caches. The check after a change is strict, so every such part must either stay the same or be on the short list of parts Little Snitch keeps for itself (`LITTLE_SNITCH_OWNED_SECTIONS` in `src/model/verify.ts`). If that list is too short for 6.5, every rule change is undone and the error names the part.
 - Whether Little Snitch respells a rule in a way `tolerantKey` in `src/model/rules.ts` does not expect.
+- Whether macOS shows a prompt of about 1,000 characters whole in the administrator dialog.
+- Whether a command started by the administrator dialog keeps running when `osascript` is killed. Without administrator rights it does.
 - Whether `log-traffic` reads its dates as local time, which the server assumes.
 - Whether the rule shape from 6.3.3 is still accepted by `restore-model` on 6.5. `npm run live-check -- --write` tests it with one harmless rule.

@@ -130,6 +130,12 @@ describe('tolerantKey', () => {
     expect(tolerantKey(back)).toBe(tolerantKey(sent));
   });
 
+  it('does not respell a remote list that holds anything but text', () => {
+    const odd = parseModelText('{"rules":[{"action":"deny","process":"any","remote-domains":["a.example",{"x":1}]},{"action":"deny","process":"any","remote-domains":["a.example"]}]}');
+    const [withObject, plain] = rulesOf(odd);
+    expect(tolerantKey(withObject!)).not.toBe(tolerantKey(plain!));
+  });
+
   it('differs for every field that carries meaning, known or not', () => {
     const base = tolerantKey(sent);
     const variants = [

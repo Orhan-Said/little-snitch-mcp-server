@@ -3,9 +3,6 @@ import { toErrorPayload } from '../errors.js';
 
 /** A reused configuration may be this old for a read that only lists things. */
 export const READ_CACHE_MS = 15_000;
-/** Resolving a profile or group name may use an older copy: Little Snitch itself rejects a name that no longer exists. */
-export const NAME_CACHE_MS = 10 * 60_000;
-
 export function respond(result: unknown): CallToolResult {
   return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
 }

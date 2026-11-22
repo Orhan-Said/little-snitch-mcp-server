@@ -49,11 +49,17 @@ export interface HarnessOptions {
   readonly modelText?: string;
   /** How many export-model calls fail after the first restore-model. */
   readonly failExportsAfterRestore?: number;
+  /** How many export-model calls fail after the first profile or rule group switch. */
+  readonly failExportsAfterSwitch?: number;
+  /** What each profile or rule group switch does besides the switch, in order. */
+  readonly switchSideEffects?: readonly string[];
 }
 
 export interface Harness {
   readonly client: Client;
   readonly dataDir: string;
+  /** The lock every server of this (pretend) macOS user shares. */
+  readonly lockFile: string;
   /** The fake firewall's configuration as it is now. */
   model(): JsonObject;
   modelText(): string;
@@ -79,6 +85,8 @@ export function installFake(root: string, options: HarnessOptions = {}): { reado
       restoreBehaviors: options.restoreBehaviors ?? [],
       switchesDoNothing: options.switchesDoNothing ?? false,
       failExportsAfterRestore: options.failExportsAfterRestore ?? 0,
+      failExportsAfterSwitch: options.failExportsAfterSwitch ?? 0,
+      switchSideEffects: options.switchSideEffects ?? [],
     }),
   );
   write('traffic.csv', TRAFFIC_CSV);
@@ -106,6 +114,7 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
   return {
     client,
     dataDir,
+    lockFile: config.lockFile,
     modelText,
     model: () => parseModelText(modelText()),
     calls: () =>

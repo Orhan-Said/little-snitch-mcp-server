@@ -45,13 +45,15 @@ export async function readStatus(ctx: Context): Promise<unknown> {
       ? 'not applicable: this server is read-only'
       : config.elevation === 'none'
         ? 'NONE: with elevation "none" the tool is run directly and nobody is asked'
-        : !config.unattendedWrites
+        : config.elevation === 'dialog'
+          ? `the macOS administrator password dialog, for each change${config.unattendedWrites ? ' (unattended writes have no effect with elevation "dialog")' : ''}`
+          : !config.unattendedWrites
           ? dialogAvailable
             ? 'the macOS administrator password dialog, for each change'
             : 'not possible: elevation "sudo" cannot make sure each change is approved; use "auto" or "dialog", or switch on unattended writes'
           : sudoSilent
             ? 'NONE: unattended writes are switched on and sudo runs the tool without asking'
-            : touchId && config.elevation !== 'dialog'
+            : touchId
               ? 'unattended writes are switched on: Touch ID, or no prompt at all while an earlier approval is still remembered'
               : dialogAvailable
                 ? 'the macOS administrator password dialog (unattended writes are switched on, but sudo needs a password)'

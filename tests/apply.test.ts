@@ -15,7 +15,7 @@ const BACKUP: BackupInfo = { name: 'backup.json', path: '/data/backups/backup.js
  * A context whose Little Snitch is scripted: `restores` answers each restore in
  * turn, and `reads` gives the configuration for each fresh read after the first.
  */
-function scripted(options: { restores: Array<() => ChangeResult>; reads?: Array<() => string> }) {
+function scripted(options: { restores: Array<() => ChangeResult>; reads?: Array<() => string>; logWritable?: boolean; cliPath?: string }) {
   const audits: AuditEntry[] = [];
   const restoredFiles: string[] = [];
   const restores = [...options.restores];
@@ -32,7 +32,7 @@ function scripted(options: { restores: Array<() => ChangeResult>; reads?: Array<
     },
   } as unknown as LittleSnitchCli;
   const ctx = {
-    config: { cliPath: '/fake/littlesnitch' },
+    config: { cliPath: options.cliPath ?? '/fake/littlesnitch' },
     cli,
     changes: { run: <T>(change: () => Promise<T>) => change() },
     models: {
@@ -59,6 +59,7 @@ function scripted(options: { restores: Array<() => ChangeResult>; reads?: Array<
       removePending: async () => undefined,
       audit: async (entry: AuditEntry) => {
         audits.push(entry);
+        return options.logWritable ?? true;
       },
     },
     now: () => NOW,
@@ -77,42 +78,76 @@ const timeout = (): never => {
 };
 
 describe('applyModelChange when the change step times out', () => {
-  it('finds that nothing changed and says so', async () => {
-    const { ctx, audits, restoredFiles } = scripted({ restores: [timeout], reads: [() => sampleModelText()] });
-    const error = await applyModelChange(ctx, plan, false).catch((caught: unknown) => caught as LittleSnitchError);
+  it('starts nothing further, because the command may still be running as root, and says the state is not known', async () => {
+    const { ctx, audits, restoredFiles } = scripted({ restores: [timeout] });
+    const error = (await applyModelChange(ctx, plan, false).catch((caught: unknown) => caught)) as LittleSnitchError;
     expect(error).toBeInstanceOf(LittleSnitchError);
-    expect((error as LittleSnitchError).kind).toBe('timeout');
-    expect((error as LittleSnitchError).message).toContain('is as it was before, so nothing needs to be undone');
-    expect((error as LittleSnitchError).details).toMatchObject({ rolledBack: false, configurationAsBefore: true, cause: 'timeout' });
+    expect(error.kind).toBe('verification-failed');
+    expect(error.message).toContain('may still be running as root');
+    expect(error.message).toContain('does not know whether the change is in effect');
+    expect(error.message).toContain("sudo '/fake/littlesnitch' restore-model --preserve-terminal-access '/data/backups/backup.json'");
+    expect(error.details).toMatchObject({ rolledBack: false, configurationAsBefore: 'unknown', cause: 'timeout' });
+    // One restore was started. No second restore and no further read followed.
+    expect(restoredFiles).toEqual(['/data/pending/change.json']);
+    expect(audits).toMatchObject([{ outcome: 'not-rolled-back', detail: 'timeout, state unknown' }]);
+  });
+});
+
+describe('applyModelChange when a step fails after the change may have run', () => {
+  const failed = (): never => {
+    throw new LittleSnitchError('verification-failed', 'Little Snitch accepted the request, but its configuration could not be read back to check it.');
+  };
+
+  it('finds that nothing changed and says so', async () => {
+    const { ctx, audits, restoredFiles } = scripted({ restores: [failed], reads: [() => sampleModelText()] });
+    const error = (await applyModelChange(ctx, plan, false).catch((caught: unknown) => caught)) as LittleSnitchError;
+    expect(error.message).toContain('is as it was before, so nothing needs to be undone');
+    expect(error.details).toMatchObject({ rolledBack: false, configurationAsBefore: true, cause: 'verification-failed' });
     expect(restoredFiles).toEqual(['/data/pending/change.json']);
     expect(audits).toMatchObject([{ outcome: 'failed', detail: 'nothing changed' }]);
   });
 
-  it('finds that the change went through after all and undoes it', async () => {
+  it('finds that the change went through and undoes it', async () => {
     const { ctx, audits, restoredFiles } = scripted({
-      restores: [timeout, () => ({ modelText: sampleModelText(), method: 'dialog' })],
+      restores: [failed, () => ({ modelText: sampleModelText(), method: 'dialog' })],
       reads: [changedText],
     });
     const error = (await applyModelChange(ctx, plan, false).catch((caught: unknown) => caught)) as LittleSnitchError;
     expect(error.kind).toBe('verification-failed');
     expect(error.message).toContain('The earlier configuration was put back and checked');
-    expect(error.details).toMatchObject({ rolledBack: true, configurationAsBefore: true, cause: 'timeout' });
+    expect(error.details).toMatchObject({ rolledBack: true, configurationAsBefore: true });
     // Both the change and the undo are restored from files written afresh, never from the backup on disk.
     expect(restoredFiles).toEqual(['/data/pending/change.json', '/data/pending/change.json']);
     expect(audits).toMatchObject([{ outcome: 'rolled-back' }]);
   });
 
-  it('gives the command to restore by hand when the undo cannot be read back either', async () => {
+  it('gives a shell-quoted command to restore by hand when the undo cannot be read back either', async () => {
     const { ctx, audits } = scripted({
-      restores: [timeout, () => ({ modelText: 'not json', method: 'dialog' })],
+      restores: [failed, () => ({ modelText: 'not json', method: 'dialog' })],
       reads: [changedText],
+      cliPath: '/odd path/$(touch pwned)/little`snitch',
     });
     const error = (await applyModelChange(ctx, plan, false).catch((caught: unknown) => caught)) as LittleSnitchError;
     expect(error.message).toContain('the configuration could not be read afterwards');
-    expect(error.message).toContain('sudo "/fake/littlesnitch" restore-model --preserve-terminal-access "/data/backups/backup.json"');
-    expect(error.message).toMatch(/shasum -a 256 "\/data\/backups\/backup\.json" must print [0-9a-f]{64}\./);
+    expect(error.message).toContain("sudo '/odd path/$(touch pwned)/little`snitch' restore-model --preserve-terminal-access '/data/backups/backup.json'");
+    expect(error.message).toMatch(/shasum -a 256 '\/data\/backups\/backup\.json' must print [0-9a-f]{64}\./);
     expect(error.details).toMatchObject({ rolledBack: false, configurationAsBefore: false });
     expect(audits).toMatchObject([{ outcome: 'not-rolled-back' }]);
+  });
+});
+
+describe('applyModelChange when the change log cannot be written', () => {
+  it('still reports the change as applied, with a warning', async () => {
+    const { ctx } = scripted({ restores: [() => ({ modelText: changedText(), method: 'dialog' })], logWritable: false });
+    const outcome = await applyModelChange(ctx, plan, false);
+    expect(outcome).toMatchObject({ applied: true, warnings: ['The change is in effect and was checked, but it could not be written to the change log.'] });
+  });
+
+  it('still gives the recovery instructions when an undo fails', async () => {
+    const { ctx } = scripted({ restores: [() => ({ modelText: 'garbage', method: 'dialog' }), () => ({ modelText: 'still garbage', method: 'dialog' })], reads: [changedText], logWritable: false });
+    const error = (await applyModelChange(ctx, plan, false).catch((caught: unknown) => caught)) as LittleSnitchError;
+    expect(error.kind).toBe('verification-failed');
+    expect(error.message).toContain('restore-model --preserve-terminal-access');
   });
 });
 

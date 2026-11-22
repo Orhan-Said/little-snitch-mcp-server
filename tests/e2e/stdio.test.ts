@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,6 +29,8 @@ describe('the built server over stdio', () => {
     const transport = new StdioClientTransport({
       command: process.execPath,
       args: [ENTRY, '--cli-path', fake.cliPath, '--elevation', 'none', '--data-dir', path.join(dir, 'data'), '--allow', 'rules'],
+      // A home folder of its own, so that the test's lock file does not land in the real one.
+      env: { HOME: dir, PATH: process.env['PATH'] ?? '/usr/bin:/bin' },
       stderr: 'pipe',
     });
     transport.stderr?.on('data', (chunk: Buffer) => {
@@ -60,6 +62,11 @@ describe('the built server over stdio', () => {
     }
   });
 
+  it('keeps its lock under the home folder it was given', async () => {
+    await client.callTool({ name: 'add_rule', arguments: { action: 'deny', process: '/usr/bin/curl', remote_hosts: ['lock-check.example'], dry_run: false } });
+    expect(existsSync(path.join(dir, 'Library', 'Application Support', 'little-snitch-mcp-server', 'change.lock'))).toBe(true);
+  });
+
   it('adds a rule from start to finish', async () => {
     const result = await client.callTool({
       name: 'add_rule',
@@ -68,7 +75,7 @@ describe('the built server over stdio', () => {
     const text = (result.content as Array<{ text: string }>)[0]?.text ?? '';
     expect(JSON.parse(text)).toMatchObject({ applied: true, rule: { action: 'deny', remote: { kind: 'hosts', values: ['blocked.example'] } } });
     const model = parseModelText(readFileSync(path.join(stateDir, 'model.json'), 'utf8'));
-    expect(rulesOf(model)).toHaveLength(5);
+    expect(rulesOf(model)).toHaveLength(6);
   });
 });
 

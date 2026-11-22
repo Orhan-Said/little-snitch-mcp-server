@@ -5,6 +5,7 @@ import { createElevator, touchIdConfigured } from './cli/elevation.js';
 import { execFile, type ExecFn } from './cli/exec.js';
 import { createCli, type LittleSnitchCli } from './cli/littlesnitch.js';
 import { parseModelText, type JsonObject } from './model/json.js';
+import { acquireKernelLock, type AcquireLock, type ReleaseLock } from './lock.js';
 import { createStore, type Store } from './store.js';
 
 export interface ModelCache {
@@ -22,16 +23,17 @@ export interface ChangeQueue {
   run<T>(change: () => Promise<T>): Promise<T>;
 }
 
-export function createChangeQueue(store: Pick<Store, 'lock'>): ChangeQueue {
+export function createChangeQueue(lock: () => Promise<ReleaseLock>): ChangeQueue {
   let last: Promise<unknown> = Promise.resolve();
   return {
     run<T>(change: () => Promise<T>): Promise<T> {
       const next = last.then(async () => {
-        const release = await store.lock();
+        const release = await lock();
         try {
           return await change();
         } finally {
-          await release();
+          // Giving the lock back must not turn a finished change into an error.
+          await release().catch(() => undefined);
         }
       });
       last = next.catch(() => undefined);
@@ -58,6 +60,7 @@ export interface ContextOverrides {
   readonly now?: () => Date;
   readonly uid?: number;
   readonly touchId?: () => Promise<boolean>;
+  readonly acquireLock?: AcquireLock;
 }
 
 export function createModelCache(cli: LittleSnitchCli, now: () => Date): ModelCache {
@@ -101,7 +104,7 @@ export function createContext(config: Config, overrides: ContextOverrides = {}):
   const store = createStore(config.dataDir, now);
   return {
     config,
-    changes: createChangeQueue(store),
+    changes: createChangeQueue(() => (overrides.acquireLock ?? acquireKernelLock)(config.lockFile)),
     cli,
     binary,
     store,

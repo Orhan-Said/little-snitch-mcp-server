@@ -135,7 +135,9 @@ export function tolerantKey(rule: JsonObject): string {
     if ((key === 'direction' && value === 'outgoing') || (key === 'priority' && value === 'regular') || (key === 'ports' && value === 'any')) {
       return [];
     }
-    const list = REMOTE_LIST_KEYS.includes(key) ? stringList(value) : undefined;
+    // Only a list made of text alone is respelled. One with anything else in it must match exactly.
+    const textOnly = typeof value === 'string' || (Array.isArray(value) && value.every((entry) => typeof entry === 'string'));
+    const list = REMOTE_LIST_KEYS.includes(key) && textOnly ? stringList(value) : undefined;
     if (list !== undefined) {
       const values = list.flatMap((entry) => entry.split(',')).map((entry) => entry.trim().toLowerCase()).filter((entry) => entry !== '');
       return [[key, [...values].sort()]];

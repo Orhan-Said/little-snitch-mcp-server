@@ -106,7 +106,7 @@ For example, in the Claude Desktop config:
 
 Two settings remove the approval for changes. Use them only if that is what you want:
 
-- `--unattended-writes` lets a change run through `sudo` like a read. With a password-free `sudo` rule, or within a few minutes of a Touch ID approval, nobody is asked.
+- `--unattended-writes` lets a change run through `sudo` like a read. With a password-free `sudo` rule, or within a few minutes of a Touch ID approval, nobody is asked. It has no effect with `--elevation dialog`, which always shows the dialog.
 - `--elevation none` runs the tool directly and never asks anyone. It exists for the tests and works only when the server itself runs as root.
 
 `get_status` says in capital letters when changes need no approval.
@@ -131,8 +131,8 @@ Tools that change something, each behind `--allow`:
 
 | Tool | Needs | What it does |
 |---|---|---|
-| `set_active_profile` | `switches` | Activates a profile by its exact name, or deactivates all profiles. |
-| `set_rule_group_enabled` | `switches` | Switches a rule group or blocklist on or off, by its exact id or name. |
+| `set_active_profile` | `switches` | Activates a profile by its exact name, or deactivates all profiles. Answers "accepted" instead of "applied" when it cannot read the result back. |
+| `set_rule_group_enabled` | `switches` | Switches a rule group or blocklist on or off, by its exact id or name. Runs nothing when the group is already in that state. |
 | `add_rule` | `rules` | Adds an allow or deny rule for a process and a remote. |
 | `update_rule` | `rules` | Changes the action, priority or notes of one rule. |
 | `remove_rule` | `rules` | Removes one rule. |
@@ -142,7 +142,7 @@ Tools that change something, each behind `--allow`:
 
 ## How a rule change works
 
-Little Snitch has no command to edit one rule. Its documented route for automation is to export the whole configuration, change it and restore it. The server does that one change at a time, also when two copies of it run:
+Little Snitch has no command to edit one rule. Its documented route for automation is to export the whole configuration, change it and restore it. The server does that one change at a time. A lock that macOS holds for the server keeps two copies of the server apart: the second one reports that it is busy. The lock frees itself if the server dies.
 
 1. It reads the configuration and saves it as a backup in its data folder.
 2. It writes the changed configuration to a file and notes the file's checksum.
@@ -153,7 +153,13 @@ Little Snitch has no command to edit one rule. Its documented route for automati
 
 The comparison ignores two things. One is what Little Snitch updates as traffic flows: a rule's last use and use count. The other is what Little Snitch keeps for itself: its statistics, its list of programs it has seen, and its version markers. For the rule just written, its dates and a few spellings may also differ, for example `tcp` and `6`.
 
-If the read-back fails or a step times out, the server reads the configuration again and undoes the change when it differs from before.
+If the read-back fails, the server reads the configuration again and undoes the change when it differs from before.
+
+A timeout is different. The command that was started may still be running as root, and a second restore on top of it could collide with it. So after a timeout the server starts nothing further. It tells you that it does not know whether the change is in effect, and gives you the command to restore the backup by hand.
+
+Profile and rule group switches follow the same steps, with Little Snitch's own `profile` and `rulegroup` commands in place of the restore. For a rule group the whole configuration must afterwards equal the earlier one with that one group switched. For a profile, no rule may have changed, and the answer lists the other parts that did.
+
+A change log that cannot be written does not fail a change. The result then carries a warning.
 
 ## Safety
 
@@ -161,7 +167,8 @@ An assistant that can change a firewall deserves suspicion. The server takes the
 
 - It starts read-only. A tool you did not allow is not offered to the assistant at all.
 - macOS asks you to approve each change in the administrator dialog, outside the assistant's reach. A web page or document that tricks the assistant cannot answer that prompt.
-- The prompt is built from the rule's fields, with the action and the remote first. A long process path keeps its beginning and its end. A rule whose remote list does not fit into the prompt is refused, and so are paths and notes with invisible characters.
+- The prompt is built from the rule's fields, with the action and the remote first, then the process, a note if there is one, and the macOS user if the rule belongs to someone else. A long process path keeps its beginning and its end. For a change to a rule, the prompt ends with the rule as it will be.
+- A rule whose remote list does not fit into the prompt cannot be added, changed or removed through the server. Paths and notes with invisible characters are refused.
 - Before it runs the tool as root, the server checks that the file is owned by root, that nobody else can write to it, and that Objective Development signed it (team `MLZF7K7B5R`).
 - It passes arguments to the tool as a list, with no shell in between. The administrator dialog is the one place that needs a shell string. There, the server quotes every word and hands the string to AppleScript as an argument.
 - It refuses a rule for any process and any remote, which would switch the firewall off or cut the Mac off from the network.
@@ -177,7 +184,8 @@ The server tells the assistant that process paths, host names and rule notes are
 
 - Rule lists and traffic summaries become part of your conversation, so your AI provider receives them. Do not use the server if that is not acceptable.
 - A rule change replaces the whole configuration. If you change something in Little Snitch during those seconds, for example by answering a connection alert, the check sees a difference and the server restores the backup. Your change is then gone, and the error lists it. Finish the approval before you go back to Little Snitch.
-- Switching a profile or a rule group uses Little Snitch's own commands. The server checks that the switch took effect. It does not compare the rest of the configuration for these two.
+- Where Little Snitch keeps the active profile is not documented. If the server does not find it in the configuration, it cannot confirm a profile switch. It then answers "accepted", lists what else changed, and leaves the check to you.
+- The lock is per macOS user. Two different macOS users who change Little Snitch at the same moment are not kept apart.
 - New rules apply in all profiles. The server cannot put a rule into one profile or create a disabled rule, because the fields for that are not confirmed yet.
 - Built-in rule groups have no name in the configuration. The server knows the English names of two of them ("macOS Services", "iCloud Services"). It shows other built-in groups but cannot switch them.
 - The server cannot answer connection alerts, create profiles, subscribe to blocklists, change preferences or capture packets.
@@ -207,7 +215,7 @@ If either run fails, please open an issue with the report.
 |---|---|---|
 | `--allow <list>` | `LITTLE_SNITCH_MCP_ALLOW` | Changes the assistant may make. Default: none. |
 | `--elevation <mode>` | `LITTLE_SNITCH_MCP_ELEVATION` | `auto` (default), `sudo`, `dialog` or `none`. See [docs/root-access.md](docs/root-access.md). |
-| `--unattended-writes` | `LITTLE_SNITCH_MCP_UNATTENDED_WRITES` | Let changes run without the administrator dialog. |
+| `--unattended-writes` | `LITTLE_SNITCH_MCP_UNATTENDED_WRITES` | Let changes run through `sudo` without the administrator dialog. No effect with `--elevation dialog`. |
 | `--cli-path <path>` | `LITTLE_SNITCH_MCP_CLI_PATH` | Where the `littlesnitch` tool is. Default: inside `/Applications/Little Snitch.app`. |
 | `--data-dir <path>` | `LITTLE_SNITCH_MCP_DATA_DIR` | Where backups and the change log go. Default: `~/Library/Application Support/little-snitch-mcp-server`. |
 
@@ -216,14 +224,14 @@ A flag wins over its environment variable. The server stops at startup if it doe
 ## Development
 
 ```bash
-npm test               # 281 tests, about 25 seconds
+npm test               # 302 tests, about 30 seconds
 npm run typecheck
 npm run test:coverage
 ```
 
-The tests never touch a real Little Snitch. `tests/fixtures/fake-littlesnitch.mjs` stands in for the tool and can misbehave on request. It can drop a rule, flip an action, add a rule nobody asked for, change a preference or fail a read-back, so that the check and the undo run. Two tests look at the real tool's ownership and signature when Little Snitch is installed, and skip otherwise.
+The tests never touch a real Little Snitch. `tests/fixtures/fake-littlesnitch.mjs` stands in for the tool and can misbehave on request. It can drop a rule, flip an action, add a rule nobody asked for, change a preference, switch the wrong group or fail a read-back, so that the check and the undo run. Two tests look at the real tool's ownership and signature when Little Snitch is installed, and skip otherwise.
 
-[docs/design.md](docs/design.md) explains the decisions behind the server, and what an outside review changed.
+[docs/design.md](docs/design.md) explains the decisions behind the server, and what two outside reviews changed.
 
 ## Related work
 

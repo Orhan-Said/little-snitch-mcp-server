@@ -1,7 +1,8 @@
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { rulesOf, toPlain } from '../../src/model/json.js';
+import { acquireKernelLock } from '../../src/lock.js';
 import { ruleRef } from '../../src/model/rules.js';
 import { CURL, SAFARI, sampleModel, sampleModelText, SLACK } from '../fixtures/model.js';
 import { startHarness, type Harness, type HarnessOptions } from '../helpers/harness.js';
@@ -59,7 +60,12 @@ describe('add_rule', () => {
     expect(readdirSync(path.join(h.dataDir, 'pending'))).toEqual([]);
     expect(readFileSync(path.join(h.dataDir, 'backups', data.backup), 'utf8')).toBe(sampleModelText());
     expect(auditLog(h)).toMatchObject([
-      { tool: 'add_rule', outcome: 'applied', backup: data.backup, summary: `add rule: DENY connections to the domains tracker.example for ${SLACK}` },
+      {
+        tool: 'add_rule',
+        outcome: 'applied',
+        backup: data.backup,
+        summary: `add rule: DENY connections to the domains tracker.example for ${SLACK}, with the note "ads Added through MCP on 2026-11-22."`,
+      },
     ]);
   });
 
@@ -67,7 +73,9 @@ describe('add_rule', () => {
     const h = await start();
     const { data } = await h.call('add_rule', { ...NEW_RULE, dry_run: true });
     expect(data).toMatchObject({ applied: false, dryRun: true, preview: { wouldAdd: { action: 'deny', process: SLACK } } });
-    expect(data.preview.approvalPrompt).toBe(`Little Snitch MCP wants to ADD a firewall rule: DENY connections to the domains tracker.example for ${SLACK}.`);
+    expect(data.preview.approvalPrompt).toBe(
+      `Little Snitch MCP wants to ADD a firewall rule: DENY connections to the domains tracker.example for ${SLACK}, with the note "ads Added through MCP on 2026-11-22.".`,
+    );
     expect(commands(h)).toEqual(['export-model']);
     expect(h.modelText()).toBe(sampleModelText());
     expect((await h.call('list_backups')).data.backups).toEqual([]);
@@ -217,7 +225,7 @@ describe('add_rule when things fail after the change was made', () => {
     const { data } = await h.call('add_rule', NEW_RULE);
     expect(data.error.message).toContain('could NOT be undone automatically');
     expect(data.error.message).toContain(path.join(h.dataDir, 'backups', data.error.details.backup));
-    expect(data.error.message).toMatch(/shasum -a 256 ".*" must print [0-9a-f]{64}\./);
+    expect(data.error.message).toMatch(/shasum -a 256 '.*' must print [0-9a-f]{64}\./);
     expect(data.error.details).toMatchObject({ rolledBack: false, configurationAsBefore: false });
     expect(auditLog(h)).toMatchObject([{ outcome: 'not-rolled-back' }]);
   });
@@ -253,11 +261,30 @@ describe('several changes at once', () => {
 
   it('refuses a change while another server is in the middle of one', async () => {
     const h = await start();
-    mkdirSync(h.dataDir, { recursive: true });
-    writeFileSync(path.join(h.dataDir, 'change.lock'), JSON.stringify({ pid: process.ppid, since: '2026-11-22T15:59:30.000Z' }));
+    const release = await acquireKernelLock(h.lockFile);
     const { data } = await h.call('add_rule', NEW_RULE);
     expect(data.error.kind).toBe('busy');
     expect(h.calls()).toEqual([]);
+    await release();
+    expect((await h.call('add_rule', NEW_RULE)).data.applied).toBe(true);
+  });
+
+  it('shares one lock between servers that were started with different data folders', async () => {
+    const h = await start();
+    expect(h.lockFile.startsWith(h.dataDir)).toBe(false);
+    expect(h.lockFile.endsWith(path.join('Library', 'Application Support', 'little-snitch-mcp-server', 'change.lock'))).toBe(true);
+  });
+});
+
+describe('a change log that cannot be written', () => {
+  it('does not turn an applied change into an error: the result carries a warning', async () => {
+    const h = await start();
+    mkdirSync(path.join(h.dataDir, 'changes.log'), { recursive: true });
+    const { data, isError } = await h.call('add_rule', NEW_RULE);
+    expect(isError).toBe(false);
+    expect(data.applied).toBe(true);
+    expect(data.warnings).toEqual(['The change is in effect and was checked, but it could not be written to the change log.']);
+    expect(rulesOf(h.model())).toHaveLength(5);
   });
 });
 
@@ -270,7 +297,7 @@ describe('update_rule', () => {
     expect(data.rule.ref).not.toBe(ORIGINAL_REFS[0]);
     expect(refs(h).slice(1)).toEqual(ORIGINAL_REFS.slice(1));
     expect(rulesOf(h.model())).toHaveLength(4);
-    expect(auditLog(h)[0]?.['summary']).toBe(`change rule (action ALLOW becomes DENY; notes change): ALLOW connections to the domains example.com for ${SAFARI}`);
+    expect(auditLog(h)[0]?.['summary']).toBe(`change rule (action ALLOW becomes DENY; the note changes): ALLOW connections to the domains example.com for ${SAFARI}`);
   });
 
   it('shows before, after and the approval prompt on a dry run', async () => {
@@ -279,7 +306,7 @@ describe('update_rule', () => {
     expect(data.preview.before.priority).toBe('high');
     expect(data.preview.after.priority).toBe('regular');
     expect(data.preview.approvalPrompt).toBe(
-      `Little Snitch MCP wants to CHANGE a firewall rule (priority high becomes regular). The rule now: ALLOW connections to ANY remote for ${CURL} (ports 443, protocol 6, high priority).`,
+      `Little Snitch MCP wants to CHANGE a firewall rule (priority high becomes regular). After the change it will be: ALLOW connections to ANY remote for ${CURL} (ports 443, protocol 6).`,
     );
     expect(h.modelText()).toBe(sampleModelText());
   });
@@ -293,6 +320,29 @@ describe('update_rule', () => {
     const empty = await h.call('update_rule', { ref: ORIGINAL_REFS[0] });
     expect(empty.data.error.message).toContain('at least one of');
     expect(h.modelText()).toBe(sampleModelText());
+  });
+
+  it('refuses to change or remove a rule whose remotes do not fit into the approval prompt', async () => {
+    const hosts = Array.from({ length: 60 }, (_, index) => `"host-number-${index}.example.com"`).join(', ');
+    const h = await start({ modelText: sampleModelText().replace('"remote-hosts": ["telemetry.slack.example", "metrics.slack.example"]', `"remote-hosts": [${hosts}]`) });
+    const long = rulesOf(h.model()).map(ruleRef)[1];
+    const update = await h.call('update_rule', { ref: long, action: 'allow' });
+    expect(update.data.error.kind).toBe('invalid-input');
+    expect(update.data.error.message).toContain('Change or remove it in Little Snitch itself');
+    const remove = await h.call('remove_rule', { ref: long });
+    expect(remove.data.error.message).toContain('more remotes than fit into one approval prompt');
+    const dry = await h.call('remove_rule', { ref: long, dry_run: true });
+    expect(dry.isError).toBe(true);
+    expect(commands(h)).toEqual(['export-model', 'export-model', 'export-model']);
+  });
+
+  it('names the macOS user in the prompt when the rule belongs to someone else', async () => {
+    const h = await start({ modelText: sampleModelText().replace('"uid": 501,\n      "process": "/Applications/Safari.app', '"uid": 502,\n      "process": "/Applications/Safari.app') });
+    const other = rulesOf(h.model()).map(ruleRef)[0];
+    const { data } = await h.call('remove_rule', { ref: other, dry_run: true });
+    expect(data.preview.approvalPrompt).toBe(
+      `Little Snitch MCP wants to REMOVE a firewall rule: ALLOW connections to the domains example.com for ${SAFARI}, a rule of macOS user 502.`,
+    );
   });
 
   it('puts the rule back when the changed rule vanished', async () => {
@@ -320,6 +370,28 @@ describe('remove_rule and restore_backup', () => {
     expect(restored.data.savedBefore).toMatch(/before-restore-backup/);
     expect(refs(h)).toEqual(ORIGINAL_REFS);
     expect(auditLog(h).map((entry) => [entry['tool'], entry['outcome']])).toEqual([['remove_rule', 'applied'], ['restore_backup', 'applied']]);
+  });
+
+  it('restores the oldest of fifty backups without pruning it away first', async () => {
+    const h = await start();
+    const removed = await h.call('remove_rule', { ref: ORIGINAL_REFS[1] });
+    const target = removed.data.backup as string;
+    const folder = path.join(h.dataDir, 'backups');
+    // Forty-nine newer backups fill the folder to its limit, so the target is the oldest of fifty.
+    for (let index = 0; index < 49; index += 1) {
+      copyFileSync(path.join(folder, target), path.join(folder, `20261122T1700${String(index).padStart(2, '0')}Z-filler-abcdef.json`));
+    }
+    expect(readdirSync(folder)).toHaveLength(50);
+
+    const { data, isError } = await h.call('restore_backup', { name: target });
+    expect(isError).toBe(false);
+    expect(data).toMatchObject({ applied: true, restored: target, rulesNow: 4 });
+    // The copy saved before the restore was the fifty-first backup. The target was not the one removed for it.
+    expect(existsSync(path.join(folder, target))).toBe(true);
+    expect(existsSync(path.join(folder, data.savedBefore))).toBe(true);
+    expect(refs(h)).toEqual(ORIGINAL_REFS);
+    // Root was given a fresh copy of what was read, not the backup file itself.
+    expect(h.calls().at(-2)?.[2]).toContain(path.join(h.dataDir, 'pending'));
   });
 
   it('refuses to remove a protected rule', async () => {

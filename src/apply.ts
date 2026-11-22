@@ -1,4 +1,5 @@
 import { prompts } from './approval.js';
+import { shellQuote } from './cli/shell.js';
 import type { Context } from './context.js';
 import { LittleSnitchError, type ErrorKind } from './errors.js';
 import { parseModelText, serializeModel, sha256, type JsonObject } from './model/json.js';
@@ -20,14 +21,18 @@ export interface PlannedChange {
   readonly preview: unknown;
 }
 
-export interface RestoreRequest {
+/** What is needed to get back to the configuration from before a change. */
+export interface RecoveryRequest {
   readonly tool: string;
   readonly summary: string;
-  readonly prompt: string;
   /** The configuration read just before, and the backup file that holds it. */
   readonly before: JsonObject;
   readonly beforeText: string;
   readonly backup: BackupInfo;
+}
+
+export interface RestoreRequest extends RecoveryRequest {
+  readonly prompt: string;
   /** The file to restore, and the checksum of the content that is meant. */
   readonly file: string;
   readonly fileSha256: string;
@@ -42,9 +47,13 @@ export interface AppliedChange {
   readonly after: JsonObject;
   readonly backup: string;
   readonly method: string;
+  /** Things that went wrong after the change was made and checked, such as a change log that could not be written. */
+  readonly warnings: readonly string[];
 }
 
 export type ChangeOutcome = AppliedChange | { readonly applied: false; readonly dryRun: true; readonly preview: unknown };
+
+export const NOT_LOGGED = 'The change is in effect and was checked, but it could not be written to the change log.';
 
 /** Errors that are raised before the tool was started, so the configuration cannot have changed. */
 const NOTHING_RAN: readonly ErrorKind[] = [
@@ -58,12 +67,16 @@ const NOTHING_RAN: readonly ErrorKind[] = [
   'tampered',
 ];
 
-/** How to restore by hand. The checksum lets the person see that the backup file is still the one this server wrote. */
-const manualRestore = (ctx: Context, request: RestoreRequest): string =>
-  `To put the earlier configuration back yourself, first check the backup: shasum -a 256 "${request.backup.path}" must print ${sha256(request.beforeText)}. ` +
-  `Then run: sudo "${ctx.config.cliPath}" restore-model --preserve-terminal-access "${request.backup.path}"`;
+/**
+ * How to restore by hand. Every path is quoted for the shell, since the person
+ * will paste this into a terminal. The checksum lets them see that the backup
+ * file is still the one this server wrote.
+ */
+export const manualRestore = (ctx: Context, request: RecoveryRequest): string =>
+  `To put the earlier configuration back yourself, first check the backup: the command shasum -a 256 ${shellQuote(request.backup.path)} must print ${sha256(request.beforeText)}. ` +
+  `Then run: sudo ${shellQuote(ctx.config.cliPath)} restore-model --preserve-terminal-access ${shellQuote(request.backup.path)}`;
 
-interface Recovery {
+export interface Recovery {
   /** True when the configuration was read and equals the one from before the change. */
   readonly asBefore: boolean;
   readonly rolledBack: boolean;
@@ -71,8 +84,8 @@ interface Recovery {
   readonly details: Record<string, unknown>;
 }
 
-/** Restores the backup from before the change and checks the whole configuration against what it was. */
-async function undo(ctx: Context, request: RestoreRequest): Promise<Recovery> {
+/** Restores the configuration from before the change and checks the whole configuration against what it was. */
+export async function undo(ctx: Context, request: RecoveryRequest): Promise<Recovery> {
   const fail = async (sentence: string, details: Record<string, unknown>): Promise<Recovery> => {
     await ctx.store.audit({ tool: request.tool, summary: request.summary, outcome: 'not-rolled-back', backup: request.backup.name });
     return { asBefore: false, rolledBack: false, sentence: `${sentence} ${manualRestore(ctx, request)}`, details };
@@ -103,16 +116,11 @@ async function undo(ctx: Context, request: RestoreRequest): Promise<Recovery> {
     });
   }
   await ctx.store.audit({ tool: request.tool, summary: request.summary, outcome: 'rolled-back', backup: request.backup.name });
-  return {
-    asBefore: true,
-    rolledBack: true,
-    sentence: 'The earlier configuration was put back and checked: it is as it was before.',
-    details: {},
-  };
+  return { asBefore: true, rolledBack: true, sentence: 'The earlier configuration was put back and checked: it is as it was before.', details: {} };
 }
 
 /** After a failure that may have left a change behind: reads the configuration again and undoes whatever differs. */
-async function recover(ctx: Context, request: RestoreRequest): Promise<Recovery> {
+async function recover(ctx: Context, request: RecoveryRequest): Promise<Recovery> {
   try {
     ctx.models.clear();
     const { model } = await ctx.models.fresh();
@@ -126,41 +134,63 @@ async function recover(ctx: Context, request: RestoreRequest): Promise<Recovery>
   return undo(ctx, request);
 }
 
+export function recoveryDetails(request: RecoveryRequest, recovery: Recovery, extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return { ...extra, ...recovery.details, backup: request.backup.name, rolledBack: recovery.rolledBack, configurationAsBefore: recovery.asBefore };
+}
+
+/**
+ * Turns a failure of the step that changes Little Snitch into the error to report,
+ * after doing what can safely be done about it. There are three cases:
+ *
+ * - Nothing was started (a cancelled prompt, a refused file): the error is passed on.
+ * - The step timed out: the command may still be running as root, and a second
+ *   restore on top of it could collide with it. So nothing more is started, and
+ *   the error says that the state is not known and how to restore by hand.
+ * - Anything else: the configuration is read again and, if it differs, undone.
+ */
+export async function failAfterWrite(ctx: Context, request: RecoveryRequest, error: unknown): Promise<never> {
+  const kind: ErrorKind | 'internal' = error instanceof LittleSnitchError ? error.kind : 'internal';
+  const message = error instanceof Error ? error.message : String(error);
+  if (error instanceof LittleSnitchError && NOTHING_RAN.includes(error.kind)) {
+    await ctx.store.audit({ tool: request.tool, summary: request.summary, outcome: 'failed', backup: request.backup.name, detail: kind });
+    throw error;
+  }
+  if (kind === 'timeout') {
+    ctx.models.clear();
+    await ctx.store.audit({ tool: request.tool, summary: request.summary, outcome: 'not-rolled-back', backup: request.backup.name, detail: 'timeout, state unknown' });
+    throw new LittleSnitchError(
+      'verification-failed',
+      `${message} The command that was started may still be running as root, so this server did not start a restore on top of it, and it does not know whether the change is in effect. ` +
+        `Wait a minute, then look at the configuration again. ${manualRestore(ctx, request)}`,
+      { details: { backup: request.backup.name, rolledBack: false, configurationAsBefore: 'unknown', cause: kind } },
+    );
+  }
+  const recovery = await recover(ctx, request);
+  throw new LittleSnitchError(
+    recovery.asBefore && !recovery.rolledBack && error instanceof LittleSnitchError ? error.kind : 'verification-failed',
+    `${message} ${recovery.sentence}`,
+    { details: recoveryDetails(request, recovery, { cause: kind }) },
+  );
+}
+
 /**
  * Restores a configuration file and proves the result. Every way this can go
- * wrong ends in one of three reported states: the configuration is as
- * intended, it is as it was before, or it could not be brought back and the
- * error says how to do that by hand.
+ * wrong ends in one of four reported states: the configuration is as intended,
+ * it is as it was before, it could not be brought back, or (after a timeout) it
+ * is not known. The last two come with the command to restore by hand.
  */
-export async function restoreVerified(ctx: Context, request: RestoreRequest): Promise<{ readonly after: JsonObject; readonly method: string }> {
+export async function restoreVerified(
+  ctx: Context,
+  request: RestoreRequest,
+): Promise<{ readonly after: JsonObject; readonly method: string; readonly warnings: readonly string[] }> {
   ctx.models.clear();
-  const details = (recovery: Recovery, extra: Record<string, unknown> = {}): Record<string, unknown> => ({
-    ...extra,
-    ...recovery.details,
-    backup: request.backup.name,
-    rolledBack: recovery.rolledBack,
-    configurationAsBefore: recovery.asBefore,
-  });
-
   let restored: { readonly modelText: string; readonly method: string };
   let after: JsonObject;
   try {
     restored = await ctx.cli.restoreModel(request.file, request.fileSha256, request.prompt);
     after = parseModelText(restored.modelText);
   } catch (error) {
-    const kind: ErrorKind | 'internal' = error instanceof LittleSnitchError ? error.kind : 'internal';
-    const message = error instanceof Error ? error.message : String(error);
-    if (error instanceof LittleSnitchError && NOTHING_RAN.includes(error.kind)) {
-      await ctx.store.audit({ tool: request.tool, summary: request.summary, outcome: 'failed', backup: request.backup.name, detail: kind });
-      throw error;
-    }
-    // The tool was started. Whether it changed anything is not known until the configuration is read again.
-    const recovery = await recover(ctx, request);
-    throw new LittleSnitchError(
-      recovery.asBefore && !recovery.rolledBack && error instanceof LittleSnitchError ? error.kind : 'verification-failed',
-      `${message} ${recovery.sentence}`,
-      { details: details(recovery, { cause: kind }) },
-    );
+    return failAfterWrite(ctx, request, error);
   }
 
   const comparison = compareModels(request.expected, after, {
@@ -169,8 +199,8 @@ export async function restoreVerified(ctx: Context, request: RestoreRequest): Pr
   });
   if (comparison.ok) {
     ctx.models.put(after);
-    await ctx.store.audit({ tool: request.tool, summary: request.summary, outcome: 'applied', method: restored.method, backup: request.backup.name });
-    return { after, method: restored.method };
+    const logged = await ctx.store.audit({ tool: request.tool, summary: request.summary, outcome: 'applied', method: restored.method, backup: request.backup.name });
+    return { after, method: restored.method, warnings: logged ? [] : [NOT_LOGGED] };
   }
 
   const problem = comparisonDetails(comparison);
@@ -186,7 +216,7 @@ export async function restoreVerified(ctx: Context, request: RestoreRequest): Pr
   throw new LittleSnitchError(
     'verification-failed',
     `The configuration after the change is not what was intended (${describeComparison(comparison)}). ${recovery.sentence}`,
-    { details: details(recovery, problem) },
+    { details: recoveryDetails(request, recovery, problem) },
   );
 }
 
@@ -196,7 +226,7 @@ export async function restoreVerified(ctx: Context, request: RestoreRequest): Pr
  * restore it. So, one change at a time: read the configuration, work out the
  * change, save a backup, restore the changed configuration, read it back, and
  * check that the whole configuration is exactly the intended one. If it is
- * not, the backup is restored and checked in the same way.
+ * not, the earlier configuration is restored and checked in the same way.
  */
 export async function applyModelChange(ctx: Context, plan: (before: JsonObject) => PlannedChange, dryRun: boolean): Promise<ChangeOutcome> {
   if (dryRun) {
@@ -210,7 +240,7 @@ export async function applyModelChange(ctx: Context, plan: (before: JsonObject) 
     const nextText = serializeModel(change.next);
     const pending = await ctx.store.writePending(nextText);
     try {
-      const { after, method } = await restoreVerified(ctx, {
+      const { after, method, warnings } = await restoreVerified(ctx, {
         tool: change.tool,
         summary: change.summary,
         prompt: change.prompt,
@@ -223,7 +253,7 @@ export async function applyModelChange(ctx: Context, plan: (before: JsonObject) 
         written: change.written,
         removedRefs: change.removedRefs,
       });
-      return { applied: true as const, after, backup: backup.name, method };
+      return { applied: true as const, after, backup: backup.name, method, warnings };
     } finally {
       await ctx.store.removePending(pending);
     }

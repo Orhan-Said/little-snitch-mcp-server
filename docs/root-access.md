@@ -10,7 +10,7 @@ For a read, any way to root is fine, and the quietest one wins: `sudo` without a
 
 For a change, the server uses the administrator dialog and nothing else. The reason is that `sudo` cannot promise a prompt. If a `NOPASSWD` rule in `sudoers` matches, `sudo` runs the command and asks nobody, and the server has no way to see that rule in advance. The dialog asks every time.
 
-You can switch this off with `--unattended-writes`. Changes then take the same route as reads.
+You can switch this off with `--unattended-writes`. Changes then take the same route as reads. With `--elevation dialog` the flag has no effect, because that mode uses the dialog for everything.
 
 ## The modes
 
@@ -18,7 +18,7 @@ You can switch this off with `--unattended-writes`. Changes then take the same r
 |---|---|---|
 | `auto` (default) | `sudo` without a prompt, else Touch ID through `sudo`, else the administrator dialog | The administrator dialog |
 | `sudo` | `sudo` without a prompt, else Touch ID through `sudo`. Never the dialog. | Refused, unless `--unattended-writes` is on |
-| `dialog` | The administrator dialog | The administrator dialog |
+| `dialog` | The administrator dialog | The administrator dialog, also with `--unattended-writes` |
 | `none` | The tool is run directly. Works only when the server itself runs as root. | The same, with no approval at all. Meant for the tests. |
 
 ## Touch ID for sudo
@@ -60,7 +60,9 @@ macOS asks again for every call. To keep the number of prompts down, the server 
 - It runs a change and the read-back that checks it under one dialog.
 - It reuses the configuration it read for 15 seconds, so listing rules, groups and profiles in a row needs one prompt.
 
-A rule change needs one prompt for the change. Without Touch ID for sudo it needs a second one before that, to read the current configuration.
+A rule change or a switch needs one prompt for the change. Without Touch ID for sudo it needs a second one before that, to read the current configuration.
+
+If you do not answer the dialog within five minutes, the server gives up. It cannot tell whether the command was started, and it cannot stop a command that runs as root. So it starts nothing further and reports that the state is not known.
 
 The command string is the only place where the server builds shell text. It single-quotes every word and passes the string to AppleScript as an argument, so it never becomes part of the AppleScript source. `tests/cli/shell.test.ts` runs the generated strings through `/bin/sh` with quotes, spaces, line breaks and shell syntax in the arguments.
 
