@@ -4,7 +4,7 @@ import { ELEVATION_REMEDY, TERMINAL_ACCESS_REMEDY } from '../errors.js';
 import { READ_ONLY, safely } from './shared.js';
 
 const TOUCH_ID_TIP =
-  'Optional: set up Touch ID for sudo, so an approval is a touch instead of a password dialog. ' +
+  'Optional: set up Touch ID for sudo, so reading needs a touch instead of a password dialog. Changes still use the password dialog. ' +
   'Run `sudo cp /etc/pam.d/sudo_local.template /etc/pam.d/sudo_local`, then uncomment the pam_tid.so line in /etc/pam.d/sudo_local.';
 
 /** Collects everything a person needs to see to get the server working. Never asks for approval. */
@@ -39,18 +39,23 @@ export async function readStatus(ctx: Context): Promise<unknown> {
             : dialogAvailable
               ? 'the macOS administrator password dialog, for each read'
               : 'not possible yet: sudo needs a password and Touch ID for sudo is not set up';
+  // A change that needs approval always goes through the administrator dialog: it is the one prompt a sudoers rule cannot switch off.
   const changeApproval =
     config.allow.size === 0
       ? 'not applicable: this server is read-only'
       : config.elevation === 'none'
-        ? 'none: the tool is run directly'
-        : config.unattendedWrites && sudoSilent
-          ? 'none: unattended writes are switched on and sudo runs the tool without asking'
-          : touchId && config.elevation !== 'dialog'
-            ? 'Touch ID for each change'
-            : dialogAvailable
-              ? 'the macOS administrator password dialog, for each change'
-              : 'not possible yet: with elevation "sudo", a change needs Touch ID for sudo or unattended writes';
+        ? 'NONE: with elevation "none" the tool is run directly and nobody is asked'
+        : !config.unattendedWrites
+          ? dialogAvailable
+            ? 'the macOS administrator password dialog, for each change'
+            : 'not possible: elevation "sudo" cannot make sure each change is approved; use "auto" or "dialog", or switch on unattended writes'
+          : sudoSilent
+            ? 'NONE: unattended writes are switched on and sudo runs the tool without asking'
+            : touchId && config.elevation !== 'dialog'
+              ? 'unattended writes are switched on: Touch ID, or no prompt at all while an earlier approval is still remembered'
+              : dialogAvailable
+                ? 'the macOS administrator password dialog (unattended writes are switched on, but sudo needs a password)'
+                : 'not possible yet: sudo needs a password and Touch ID for sudo is not set up';
 
   const toDo = [
     ...(binary.exists ? [] : ['Install Little Snitch 6 from https://obdev.at/littlesnitch.']),
@@ -58,6 +63,12 @@ export async function readStatus(ctx: Context): Promise<unknown> {
     ...(terminalAccess === 'disabled' ? [TERMINAL_ACCESS_REMEDY] : []),
     ...(config.elevation === 'sudo' && !sudoSilent && !touchId ? [ELEVATION_REMEDY] : []),
     ...(config.elevation === 'auto' && !sudoSilent && !touchId ? [TOUCH_ID_TIP] : []),
+    ...(sudoSilent
+      ? ['On this Mac sudo runs the Little Snitch tool without asking (a NOPASSWD rule or a remembered approval). Reads need no approval. Any program you run can use that rule too; see docs/root-access.md.']
+      : []),
+    ...(config.elevation === 'none' && config.allow.size > 0
+      ? ['Elevation "none" is meant for tests: the assistant can make the allowed changes without anyone approving them.']
+      : []),
     ...(config.allow.size === 0
       ? ['This server only reads. To let the assistant make changes, start it with --allow switches, --allow rules, --allow restore, or a comma-separated list.']
       : []),

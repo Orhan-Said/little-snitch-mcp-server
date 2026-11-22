@@ -62,15 +62,12 @@ export function groupDisplayNames(model: JsonObject): ReadonlyMap<string, string
 }
 
 /**
- * Finds the one group a caller means by id, name or kind. An exact match wins;
- * otherwise a name that differs only in letter case is accepted when it is unique.
- * There is no fuzzy matching: a typo must not switch a different group.
+ * Finds the one group a caller means by its exact id, name or kind. Nothing is
+ * matched loosely, not even letter case: a typo must not switch a different group.
  */
 export function resolveGroup(model: JsonObject, query: string): GroupSummary {
   const groups = summarizeGroups(model);
-  const exact = groups.filter((group) => group.id === query || group.name === query || group.kind === query);
-  const lower = query.toLowerCase();
-  const candidates = exact.length > 0 ? exact : groups.filter((group) => (group.name ?? '').toLowerCase() === lower);
+  const candidates = groups.filter((group) => group.id === query || group.name === query || group.kind === query);
   if (candidates.length === 1 && candidates[0] !== undefined) {
     return candidates[0];
   }
@@ -79,7 +76,7 @@ export function resolveGroup(model: JsonObject, query: string): GroupSummary {
       details: { matches: candidates.map((group) => ({ id: group.id, name: group.name, kind: group.kind })) },
     });
   }
-  throw new LittleSnitchError('not-found', `No rule group or blocklist is called "${query}".`, {
+  throw new LittleSnitchError('not-found', `No rule group or blocklist is called "${query}". Names must match exactly, including letter case.`, {
     details: { available: groups.map((group) => ({ id: group.id, name: group.name, kind: group.kind })) },
   });
 }

@@ -1,136 +1,169 @@
 import { groupDisplayNames, summarizeGroups } from './groups.js';
-import { rulesOf, type JsonObject } from './json.js';
+import { canonical, rulesOf, type JsonObject } from './json.js';
 import { summarizeProfiles } from './profiles.js';
-import { ruleRef, semanticKey, summarizeRule, type RuleSummary } from './rules.js';
+import { ruleRef, summarizeRule, tolerantKey, type RuleSummary } from './rules.js';
 
-/** What a change was meant to do, stated against the configuration read just before it. */
-export interface Expectation {
-  /** References of rules that should be gone afterwards. */
-  readonly removedRefs: readonly string[];
-  /** Rules that should exist afterwards. They are matched by meaning, since Little Snitch may respell a rule it accepts. */
-  readonly added: readonly JsonObject[];
+/**
+ * Parts of the configuration that Little Snitch writes on its own account:
+ * counters, caches of programs it has seen, and its own version markers. They
+ * hold no rule, switch or preference, so a difference in them is not a
+ * difference in the firewall. Everything else must match exactly.
+ */
+export const LITTLE_SNITCH_OWNED_SECTIONS = [
+  'blocklistStatistics',
+  'statisticsModelCreationDate',
+  'lastSeenExecutableByCodeIdentifier',
+  'bundleVersion',
+  'factoryRuleSetVersion',
+] as const;
+
+export interface CompareOptions {
+  /**
+   * Rules of the expected configuration that were just written. For these, the
+   * dates and a few known respellings may differ (see `tolerantKey`); every
+   * other field, known or not, must come back as sent.
+   */
+  readonly written?: readonly JsonObject[];
+  /** References of rules that were meant to disappear. Used to say "not removed" instead of "unexpected". */
+  readonly removedRefs?: readonly string[];
 }
 
-export interface Verification {
-  /** True when every rule that should survive is still there and every requested change took effect. */
+export interface Comparison {
+  /** True only when the two configurations hold the same firewall: the same rules and the same everything else. */
   readonly ok: boolean;
-  /** Rules that existed before, were not meant to change, and are gone. */
+  /** Rules that should be there and are not. */
   readonly missing: readonly RuleSummary[];
-  /** Requested rules that are not in the configuration afterwards. */
+  /** Rules that are there and should not be: nobody asked for them. */
+  readonly unexpected: readonly RuleSummary[];
+  /** Rules that were written and did not come back as sent. */
   readonly notApplied: readonly RuleSummary[];
   /** Rules that should have been removed and are still there. */
   readonly notRemoved: readonly RuleSummary[];
-  /** Rules that appeared without being requested, for example one made in Little Snitch at the same moment. */
-  readonly unexpected: readonly RuleSummary[];
-  /** Differences outside the rule list: rule groups switched, profiles added or removed. */
+  /** Top-level parts other than the rule list that differ, by name: preferences, groups, profiles and so on. */
+  readonly changedSections: readonly string[];
+  /** The group and profile differences in words, where they can be described. */
   readonly otherChanges: readonly string[];
-  /** True when the change failed and the rule list no longer matches what it was before. */
-  readonly shouldRollBack: boolean;
 }
 
-function count(refs: readonly string[]): Map<string, number> {
-  const counts = new Map<string, number>();
-  for (const ref of refs) {
-    counts.set(ref, (counts.get(ref) ?? 0) + 1);
-  }
-  return counts;
-}
-
-function otherChanges(before: JsonObject, after: JsonObject): readonly string[] {
+function describeGroupsAndProfiles(expected: JsonObject, actual: JsonObject): readonly string[] {
   const changes: string[] = [];
-  const afterGroups = new Map(summarizeGroups(after).map((group) => [group.id, group]));
-  const beforeGroups = new Map(summarizeGroups(before).map((group) => [group.id, group]));
-  for (const [id, group] of beforeGroups) {
-    const now = afterGroups.get(id);
+  const actualGroups = new Map(summarizeGroups(actual).map((group) => [group.id, group]));
+  const expectedGroups = new Map(summarizeGroups(expected).map((group) => [group.id, group]));
+  for (const [id, group] of expectedGroups) {
+    const now = actualGroups.get(id);
     const label = group.name ?? group.kind ?? id;
     if (now === undefined) {
       changes.push(`The rule group "${label}" is gone.`);
     } else if (now.active !== group.active) {
-      changes.push(`The rule group "${label}" is now ${now.active === true ? 'on' : 'off'}.`);
+      changes.push(`The rule group "${label}" is ${now.active === true ? 'on' : 'off'} and should be ${group.active === true ? 'on' : 'off'}.`);
     }
   }
-  for (const [id, group] of afterGroups) {
-    if (!beforeGroups.has(id)) {
+  for (const [id, group] of actualGroups) {
+    if (!expectedGroups.has(id)) {
       changes.push(`A rule group "${group.name ?? group.kind ?? id}" appeared.`);
     }
   }
-  const beforeProfiles = new Set(summarizeProfiles(before).map((profile) => profile.id));
-  const afterProfiles = new Set(summarizeProfiles(after).map((profile) => profile.id));
-  for (const profile of summarizeProfiles(before)) {
-    if (!afterProfiles.has(profile.id)) {
+  const expectedProfiles = new Set(summarizeProfiles(expected).map((profile) => profile.id));
+  const actualProfiles = new Set(summarizeProfiles(actual).map((profile) => profile.id));
+  for (const profile of summarizeProfiles(expected)) {
+    if (!actualProfiles.has(profile.id)) {
       changes.push(`The profile "${profile.name ?? profile.id}" is gone.`);
     }
   }
-  for (const profile of summarizeProfiles(after)) {
-    if (!beforeProfiles.has(profile.id)) {
+  for (const profile of summarizeProfiles(actual)) {
+    if (!expectedProfiles.has(profile.id)) {
       changes.push(`A profile "${profile.name ?? profile.id}" appeared.`);
     }
   }
   return changes;
 }
 
+function changedSections(expected: JsonObject, actual: JsonObject): readonly string[] {
+  const ignored: readonly string[] = ['rules', ...LITTLE_SNITCH_OWNED_SECTIONS];
+  const keys = [...new Set([...Object.keys(expected), ...Object.keys(actual)])].filter((key) => !ignored.includes(key)).sort();
+  return keys.filter((key) => canonical(expected[key]) !== canonical(actual[key]));
+}
+
 /**
- * Compares the configuration read back after a change with what the change was
- * meant to produce. Fields Little Snitch updates on its own (last use, use
- * count) are ignored, so ordinary traffic during the change is not an error.
+ * Compares the configuration Little Snitch reports with the one that was
+ * intended. The comparison is strict: a rule nobody asked for, a field of a
+ * written rule that came back different, and any change to preferences, rule
+ * groups or profiles all count as a difference. Only two things are ignored:
+ * the fields Little Snitch updates as traffic flows (a rule's last use and use
+ * count), and the sections listed in LITTLE_SNITCH_OWNED_SECTIONS.
  */
-export function verifyChange(before: JsonObject, after: JsonObject, expectation: Expectation): Verification {
-  const beforeRules = rulesOf(before);
-  const afterRules = rulesOf(after);
-  const beforeNames = groupDisplayNames(before);
-  const afterNames = groupDisplayNames(after);
-  const removed = count(expectation.removedRefs);
+export function compareModels(expected: JsonObject, actual: JsonObject, options: CompareOptions = {}): Comparison {
+  const written = new Set(options.written ?? []);
+  const removed = new Set(options.removedRefs ?? []);
+  const expectedNames = groupDisplayNames(expected);
+  const actualNames = groupDisplayNames(actual);
 
-  // Rules expected to survive untouched: everything from before, less the removals.
-  const survivors = new Map<string, JsonObject[]>();
-  const removalsLeft = new Map(removed);
-  for (const rule of beforeRules) {
-    const ref = ruleRef(rule);
-    const left = removalsLeft.get(ref) ?? 0;
-    if (left > 0) {
-      removalsLeft.set(ref, left - 1);
-      continue;
+  // Rules that must be there exactly as they are, grouped by reference.
+  const waiting = new Map<string, JsonObject[]>();
+  for (const rule of rulesOf(expected)) {
+    if (!written.has(rule)) {
+      const ref = ruleRef(rule);
+      waiting.set(ref, [...(waiting.get(ref) ?? []), rule]);
     }
-    survivors.set(ref, [...(survivors.get(ref) ?? []), rule]);
   }
-
-  const extras: JsonObject[] = [];
-  for (const rule of afterRules) {
+  let extras: JsonObject[] = [];
+  for (const rule of rulesOf(actual)) {
     const ref = ruleRef(rule);
-    const waiting = survivors.get(ref);
-    if (waiting !== undefined && waiting.length > 0) {
-      survivors.set(ref, waiting.slice(1));
+    const queue = waiting.get(ref);
+    if (queue !== undefined && queue.length > 0) {
+      waiting.set(ref, queue.slice(1));
     } else {
       extras.push(rule);
     }
   }
+  const missing = [...waiting.values()].flat();
 
-  const missing = [...survivors.values()].flat().map((rule) => summarizeRule(rule, beforeNames));
-  const notRemoved = extras.filter((rule) => removed.has(ruleRef(rule)));
-  let unclaimed = extras.filter((rule) => !removed.has(ruleRef(rule)));
   const notApplied: JsonObject[] = [];
-  for (const wanted of expectation.added) {
-    const key = semanticKey(wanted);
-    const index = unclaimed.findIndex((rule) => semanticKey(rule) === key);
+  for (const rule of written) {
+    const key = tolerantKey(rule);
+    const index = extras.findIndex((candidate) => tolerantKey(candidate) === key);
     if (index === -1) {
-      notApplied.push(wanted);
+      notApplied.push(rule);
     } else {
-      unclaimed = unclaimed.filter((_, position) => position !== index);
+      extras = extras.filter((_, position) => position !== index);
     }
   }
-
-  const ok = missing.length === 0 && notApplied.length === 0 && notRemoved.length === 0;
-  const afterCounts = count(afterRules.map(ruleRef));
-  const sameRulesAsBefore =
-    beforeRules.length === afterRules.length && [...count(beforeRules.map(ruleRef))].every(([ref, total]) => afterCounts.get(ref) === total);
+  const notRemoved = extras.filter((rule) => removed.has(ruleRef(rule)));
+  const unexpected = extras.filter((rule) => !removed.has(ruleRef(rule)));
+  const sections = changedSections(expected, actual);
 
   return {
-    ok,
-    missing,
-    notApplied: notApplied.map((rule) => summarizeRule(rule, afterNames)),
-    notRemoved: notRemoved.map((rule) => summarizeRule(rule, afterNames)),
-    unexpected: unclaimed.map((rule) => summarizeRule(rule, afterNames)),
-    otherChanges: otherChanges(before, after),
-    shouldRollBack: !ok && !sameRulesAsBefore,
+    ok: missing.length === 0 && unexpected.length === 0 && notApplied.length === 0 && notRemoved.length === 0 && sections.length === 0,
+    missing: missing.map((rule) => summarizeRule(rule, expectedNames)),
+    unexpected: unexpected.map((rule) => summarizeRule(rule, actualNames)),
+    notApplied: notApplied.map((rule) => summarizeRule(rule, expectedNames)),
+    notRemoved: notRemoved.map((rule) => summarizeRule(rule, actualNames)),
+    changedSections: sections,
+    otherChanges: describeGroupsAndProfiles(expected, actual),
   };
+}
+
+/** A short account of a failed comparison, for error details. Lists are cut to 20 entries. */
+export function comparisonDetails(comparison: Comparison): Record<string, unknown> {
+  const cut = <T>(list: readonly T[]): readonly T[] => list.slice(0, 20);
+  return {
+    missing: cut(comparison.missing),
+    unexpected: cut(comparison.unexpected),
+    notApplied: cut(comparison.notApplied),
+    notRemoved: cut(comparison.notRemoved),
+    changedSections: comparison.changedSections,
+    otherChanges: comparison.otherChanges,
+  };
+}
+
+/** One sentence saying how two configurations differ. */
+export function describeComparison(comparison: Comparison): string {
+  const parts = [
+    ...(comparison.missing.length > 0 ? [`${comparison.missing.length} rule(s) missing`] : []),
+    ...(comparison.unexpected.length > 0 ? [`${comparison.unexpected.length} rule(s) nobody asked for`] : []),
+    ...(comparison.notApplied.length > 0 ? [`${comparison.notApplied.length} written rule(s) not as sent`] : []),
+    ...(comparison.notRemoved.length > 0 ? [`${comparison.notRemoved.length} rule(s) not removed`] : []),
+    ...(comparison.changedSections.length > 0 ? [`these parts differ: ${comparison.changedSections.join(', ')}`] : []),
+  ];
+  return parts.length === 0 ? 'no difference' : parts.join('; ');
 }

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { groupDisplayNames, resolveGroup, summarizeGroups } from '../../src/model/groups.js';
 import { numberValue, parseModelText, rulesOf, type JsonObject } from '../../src/model/json.js';
 import { activeProfile, resolveProfile, summarizeProfiles } from '../../src/model/profiles.js';
-import { filterRules, remoteOf, ruleRef, semanticKey, summarizeRule } from '../../src/model/rules.js';
+import { filterRules, remoteOf, ruleRef, semanticKey, summarizeRule, tolerantKey } from '../../src/model/rules.js';
 import { CURL, SAFARI, sampleModel, SLACK } from '../fixtures/model.js';
 
 const NOW = new Date('2026-11-22T16:00:00Z');
@@ -122,6 +122,25 @@ describe('semanticKey', () => {
   });
 });
 
+describe('tolerantKey', () => {
+  const sent = { action: 'deny', creationDate: '2026-11-22T16:00:00Z', modificationDate: '2026-11-22T16:00:00Z', origin: 'frontend', uid: numberValue(501), process: CURL, 'remote-domains': 'example.com', protocol: 'tcp' };
+
+  it('is the same for the respellings Little Snitch may make', () => {
+    const back = { ...sent, creationDate: numberValue(817056000), modificationDate: numberValue(817056009), protocol: '6', direction: 'outgoing', priority: 'regular', ports: 'any', 'remote-domains': ['EXAMPLE.com'], lastUsed: numberValue(1), useCount: numberValue(2) };
+    expect(tolerantKey(back)).toBe(tolerantKey(sent));
+  });
+
+  it('differs for every field that carries meaning, known or not', () => {
+    const base = tolerantKey(sent);
+    const variants = [
+      { ...sent, action: 'allow' }, { ...sent, uid: numberValue(0) }, { ...sent, origin: 'factory' }, { ...sent, process: SAFARI },
+      { ...sent, 'remote-domains': 'example.org' }, { ...sent, protocol: 'udp' }, { ...sent, direction: 'incoming' }, { ...sent, priority: 'high' },
+      { ...sent, ports: '443' }, { ...sent, notes: 'x' }, { ...sent, group: 'g' }, { ...sent, disabled: true }, { ...sent, profile: 'p' }, { ...sent, via: CURL },
+    ];
+    expect(variants.map((variant) => tolerantKey(variant) === base)).toEqual(variants.map(() => false));
+  });
+});
+
 describe('filterRules', () => {
   const all = summaries();
   const processes = (filter: Parameters<typeof filterRules>[1]) => filterRules(all, filter, NOW).map((entry) => entry.process);
@@ -157,16 +176,16 @@ describe('rule groups', () => {
     ]);
   });
 
-  it('finds a group by id, name, kind, or a name in another letter case', () => {
+  it('finds a group by its exact id, name or kind', () => {
     const model = sampleModel();
     expect(resolveGroup(model, 'aaaaad').name).toBe('Work rules');
     expect(resolveGroup(model, 'iCloud Services').id).toBe('aaaaac');
     expect(resolveGroup(model, 'builtinMacOSServices').id).toBe('aaaaab');
-    expect(resolveGroup(model, 'work RULES').id).toBe('aaaaad');
   });
 
-  it('does not guess at a misspelled group', () => {
+  it('does not guess at a misspelled group or one in another letter case', () => {
     expect(() => resolveGroup(sampleModel(), 'Work rule')).toThrow(/No rule group or blocklist is called "Work rule"/);
+    expect(() => resolveGroup(sampleModel(), 'work RULES')).toThrow(/Names must match exactly, including letter case/);
   });
 
   it('refuses a name two groups share', () => {

@@ -115,6 +115,36 @@ export function semanticKey(rule: JsonObject): string {
   ]);
 }
 
+const DATE_KEYS = ['creationDate', 'modificationDate'] as const;
+const REMOTE_LIST_KEYS: readonly string[] = ['remote-domains', 'remote-hosts', 'remote-addresses'];
+
+/**
+ * The whole rule, every field included, in a form that stays the same under the
+ * few respellings Little Snitch is known or expected to make to a rule it
+ * accepts: its own dates, a default it leaves out, a protocol name turned into
+ * a number, one remote written as text or as a list. A written rule must come
+ * back with this key unchanged. Anything else that differs, such as the user,
+ * the group, the notes or a field this server does not know, is a real difference.
+ */
+export function tolerantKey(rule: JsonObject): string {
+  const entries = Object.entries(without(rule, [...VOLATILE_RULE_KEYS, ...DATE_KEYS])).flatMap(([key, value]): Array<[string, JsonValue]> => {
+    if (key === 'protocol') {
+      const protocol = normalizeProtocol(asString(value));
+      return protocol === 'any' ? [] : [[key, protocol]];
+    }
+    if ((key === 'direction' && value === 'outgoing') || (key === 'priority' && value === 'regular') || (key === 'ports' && value === 'any')) {
+      return [];
+    }
+    const list = REMOTE_LIST_KEYS.includes(key) ? stringList(value) : undefined;
+    if (list !== undefined) {
+      const values = list.flatMap((entry) => entry.split(',')).map((entry) => entry.trim().toLowerCase()).filter((entry) => entry !== '');
+      return [[key, [...values].sort()]];
+    }
+    return [[key, value]];
+  });
+  return canonical(Object.fromEntries(entries));
+}
+
 export function summarizeRule(rule: JsonObject, groupNames: ReadonlyMap<string, string | null>): RuleSummary {
   const optional = <T>(key: string, value: T | undefined): Record<string, T> => (value === undefined ? {} : { [key]: value });
   const groupId = asString(rule['group']);

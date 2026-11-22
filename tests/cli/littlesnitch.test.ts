@@ -75,6 +75,7 @@ describe('assertSafeName', () => {
     expect(() => assertSafeName('profile', '--deactivate-all')).toThrow(/must not start with "-"/);
     expect(() => assertSafeName('profile', '   ')).toThrow(/between 1 and 200/);
     expect(() => assertSafeName('profile', 'a\nb')).toThrow(/control characters/);
+    expect(() => assertSafeName('profile', 'Work\u202Eemoh')).toThrow(/invisible characters/);
   });
 });
 
@@ -161,19 +162,20 @@ describe('createCli', () => {
     await expect(cli.setRuleGroupEnabled('Nope', true)).rejects.toMatchObject({ kind: 'cli-failed' });
   });
 
-  it('restores with terminal access preserved and returns the configuration read back', async () => {
+  it('restores with terminal access preserved, names the checksum of the file, and returns the configuration read back', async () => {
     const { cli, runs } = setup({ outputs: [ok(''), ok('{"rules":[1]}')] });
-    const restored = await cli.restoreModel('/data/pending/x.json', 'Approve');
+    const restored = await cli.restoreModel('/data/pending/x.json', 'a'.repeat(64), 'Approve');
     expect(restored).toEqual({ modelText: '{"rules":[1]}', method: 'sudo' });
     expect(runs[0]?.steps).toEqual([
-      { args: ['restore-model', '--preserve-terminal-access', '/data/pending/x.json'], write: true },
+      { args: ['restore-model', '--preserve-terminal-access', '/data/pending/x.json'], write: true, input: { index: 2, sha256: 'a'.repeat(64) } },
       { args: ['export-model'] },
     ]);
+    expect(runs[0]?.reason).toBe('Approve');
   });
 
   it('reports a change whose result could not be read back', async () => {
     const { cli } = setup({ outputs: [ok('')] });
-    await expect(cli.restoreModel('/data/pending/x.json', 'Approve')).rejects.toMatchObject({
+    await expect(cli.restoreModel('/data/pending/x.json', 'a'.repeat(64), 'Approve')).rejects.toMatchObject({
       kind: 'verification-failed',
       details: { changed: true },
     });
@@ -181,7 +183,12 @@ describe('createCli', () => {
 
   it('reports a restore Little Snitch refused', async () => {
     const { cli } = setup({ outputs: [{ code: 1, stdout: '', stderr: 'Invalid backup file\n' }] });
-    await expect(cli.restoreModel('/data/pending/x.json', 'Approve')).rejects.toMatchObject({ kind: 'cli-failed' });
+    await expect(cli.restoreModel('/data/pending/x.json', 'a'.repeat(64), 'Approve')).rejects.toMatchObject({ kind: 'cli-failed' });
+  });
+
+  it('reports a file that was not the one written as tampered', async () => {
+    const { cli } = setup({ outputs: [{ code: 97, stdout: '', stderr: 'lsmcp: the file to restore is not the file that was written; nothing was run' }] });
+    await expect(cli.restoreModel('/data/pending/x.json', 'a'.repeat(64), 'Approve')).rejects.toMatchObject({ kind: 'tampered' });
   });
 
   it('limits a preference listing to one scope when asked', async () => {

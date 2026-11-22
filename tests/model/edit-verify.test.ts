@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { addRule, buildRule, findRule, removeRule, updateRule, validateNewRule, type NewRuleSpec } from '../../src/model/edit.js';
 import { parseModelText, rulesOf, serializeModel, toPlain, type JsonObject } from '../../src/model/json.js';
 import { ruleRef } from '../../src/model/rules.js';
-import { verifyChange } from '../../src/model/verify.js';
+import { compareModels, describeComparison } from '../../src/model/verify.js';
 import { CURL, SAFARI, sampleModel } from '../fixtures/model.js';
 
 const NOW = new Date('2026-11-22T16:00:00Z');
@@ -154,89 +154,116 @@ describe('addRule, removeRule and updateRule', () => {
   });
 });
 
-describe('verifyChange', () => {
-  it('accepts an added rule that came back exactly as sent', () => {
+describe('compareModels', () => {
+  const add = (before: JsonObject, spec: NewRuleSpec = SPEC) => {
+    const rule = buildRule(spec, { uid: 501, now: NOW, model: before });
+    return { rule, next: addRule(before, rule) };
+  };
+
+  it('accepts a written rule that came back exactly as sent', () => {
     const before = sampleModel();
-    const rule = buildRule(SPEC, { uid: 501, now: NOW, model: before });
-    const result = verifyChange(before, reexport(addRule(before, rule)), { removedRefs: [], added: [rule] });
-    expect(result).toMatchObject({ ok: true, missing: [], notApplied: [], notRemoved: [], unexpected: [], otherChanges: [], shouldRollBack: false });
+    const { rule, next } = add(before);
+    expect(compareModels(next, reexport(next), { written: [rule] })).toEqual({
+      ok: true, missing: [], unexpected: [], notApplied: [], notRemoved: [], changedSections: [], otherChanges: [],
+    });
   });
 
-  it('accepts an added rule Little Snitch respelled, and traffic that happened meanwhile', () => {
+  it('accepts the known respellings of a written rule, its own dates, and traffic that happened meanwhile', () => {
     const before = sampleModel();
-    const rule = buildRule({ ...SPEC, protocol: 'tcp' }, { uid: 501, now: NOW, model: before });
-    const respelled = { ...rule, protocol: '6', direction: 'outgoing', 'remote-domains': ['tracker.example'], approved: true };
+    const { rule, next } = add(before, { ...SPEC, protocol: 'tcp' });
+    const respelled = { ...rule, protocol: '6', direction: 'outgoing', priority: 'regular', ports: 'any', 'remote-domains': ['tracker.example'], modificationDate: '2026-11-22T16:00:07Z' };
     const after = parseModelText(serializeModel(addRule(before, respelled)).replace('"useCount":42', '"useCount":57'));
-    expect(verifyChange(before, after, { removedRefs: [], added: [rule] }).ok).toBe(true);
+    expect(compareModels(next, after, { written: [rule] }).ok).toBe(true);
   });
 
-  it('reports a rule Little Snitch silently dropped, with nothing to roll back', () => {
+  it('does not accept a written rule that came back for another user, group or note, disabled, or with a field nobody sent', () => {
     const before = sampleModel();
-    const rule = buildRule(SPEC, { uid: 501, now: NOW, model: before });
-    const result = verifyChange(before, reexport(before), { removedRefs: [], added: [rule] });
+    const { rule, next } = add(before);
+    const variants: JsonObject[] = [
+      { ...rule, uid: parseModelText('{"n":0}')['n'] ?? null },
+      { ...rule, group: 'aaaaac' },
+      { ...rule, notes: 'not what was asked' },
+      { ...rule, disabled: true },
+      { ...rule, profile: 'p1' },
+      { ...rule, action: 'allow' },
+      Object.fromEntries(Object.entries(rule).filter(([key]) => key !== 'uid')),
+    ];
+    for (const variant of variants) {
+      const result = compareModels(next, reexport(addRule(before, variant)), { written: [rule] });
+      expect(result.ok).toBe(false);
+      expect(result.notApplied).toHaveLength(1);
+      expect(result.unexpected).toHaveLength(1);
+    }
+  });
+
+  it('does not accept a rule nobody asked for, whatever else is right', () => {
+    const before = sampleModel();
+    const { rule, next } = add(before);
+    const stray = { action: 'allow', process: 'any', remote: 'any' };
+    const result = compareModels(next, reexport(addRule(next, stray)), { written: [rule] });
     expect(result.ok).toBe(false);
-    expect(result.notApplied.map((entry) => entry.process)).toEqual([CURL]);
-    expect(result.shouldRollBack).toBe(false);
+    expect(result.unexpected.map((entry) => entry.remote)).toEqual([{ kind: 'any' }]);
+    expect(describeComparison(result)).toBe('1 rule(s) nobody asked for');
   });
 
-  it('asks for a rollback when another rule was lost', () => {
+  it('does not accept a change to a preference, a rule group or a profile', () => {
     const before = sampleModel();
-    const rule = buildRule(SPEC, { uid: 501, now: NOW, model: before });
-    const damaged = removeRule(addRule(before, rule), ref(before, 0)).model;
-    const result = verifyChange(before, reexport(damaged), { removedRefs: [], added: [rule] });
-    expect(result.ok).toBe(false);
-    expect(result.missing.map((entry) => entry.process)).toEqual([SAFARI]);
-    expect(result.shouldRollBack).toBe(true);
+    const { rule, next } = add(before);
+    const text = serializeModel(next);
+    const preference = compareModels(next, parseModelText(text.replace('"allowCommandLineAccess":true', '"allowCommandLineAccess":false')), { written: [rule] });
+    expect(preference).toMatchObject({ ok: false, changedSections: ['globalDefaults'], missing: [], unexpected: [] });
+    const group = compareModels(next, parseModelText(text.replace('"kind":"builtinICloudServices","name":null,"isActive":false', '"kind":"builtinICloudServices","name":null,"isActive":true')), { written: [rule] });
+    expect(group).toMatchObject({ ok: false, changedSections: ['groups'], otherChanges: ['The rule group "iCloud Services" is on and should be off.'] });
+    const profile = compareModels(next, parseModelText(text.replace('"p1":{"name":"Home"},', '')), { written: [rule] });
+    expect(profile).toMatchObject({ ok: false, changedSections: ['profiles'], otherChanges: ['The profile "Home" is gone.'] });
+    const user = compareModels(next, parseModelText(text.replace('"activeProfile":"p2"', '"activeProfile":"p1"')), { written: [rule] });
+    expect(user.changedSections).toEqual(['users']);
+    const added = compareModels(next, parseModelText(text.replace('"networkTriggers":[]', '"networkTriggers":[],"somethingNew":{"on":true}')), { written: [rule] });
+    expect(added.changedSections).toEqual(['somethingNew']);
   });
 
-  it('asks for a rollback when the rule came back meaning something else', () => {
-    const before = sampleModel();
-    const rule = buildRule(SPEC, { uid: 501, now: NOW, model: before });
-    const result = verifyChange(before, reexport(addRule(before, { ...rule, action: 'allow' })), { removedRefs: [], added: [rule] });
-    expect(result.notApplied).toHaveLength(1);
-    expect(result.unexpected.map((entry) => entry.action)).toEqual(['allow']);
-    expect(result.shouldRollBack).toBe(true);
-  });
-
-  it('accepts a removal and reports a removal that did not happen', () => {
-    const before = sampleModel();
-    const target = ref(before, 0);
-    expect(verifyChange(before, reexport(removeRule(before, target).model), { removedRefs: [target], added: [] }).ok).toBe(true);
-    const unchanged = verifyChange(before, reexport(before), { removedRefs: [target], added: [] });
-    expect(unchanged.ok).toBe(false);
-    expect(unchanged.notRemoved.map((entry) => entry.process)).toEqual([SAFARI]);
-    expect(unchanged.shouldRollBack).toBe(false);
-  });
-
-  it('accepts an update and asks for a rollback when the updated rule vanished', () => {
-    const before = sampleModel();
-    const target = ref(before, 0);
-    const { model: next, after } = updateRule(before, target, { action: 'deny' }, NOW);
-    expect(verifyChange(before, reexport(next), { removedRefs: [target], added: [after] }).ok).toBe(true);
-    const vanished = verifyChange(before, reexport(removeRule(before, target).model), { removedRefs: [target], added: [after] });
-    expect(vanished.ok).toBe(false);
-    expect(vanished.shouldRollBack).toBe(true);
-  });
-
-  it('notes a rule that appeared on its own without failing the change', () => {
-    const before = sampleModel();
-    const rule = buildRule(SPEC, { uid: 501, now: NOW, model: before });
-    const stray = { action: 'allow', process: SAFARI, 'remote-domains': 'made-in-the-app.example' };
-    const result = verifyChange(before, reexport(addRule(addRule(before, rule), stray)), { removedRefs: [], added: [rule] });
-    expect(result.ok).toBe(true);
-    expect(result.unexpected.map((entry) => entry.remote)).toEqual([{ kind: 'domains', values: ['made-in-the-app.example'] }]);
-  });
-
-  it('reports rule groups and profiles that changed alongside', () => {
+  it('ignores only the parts Little Snitch keeps for itself', () => {
     const before = sampleModel();
     const after = parseModelText(
       serializeModel(before)
-        .replace('"aaaaac":{"kind":"builtinICloudServices","name":null,"isActive":false}', '"aaaaac":{"kind":"builtinICloudServices","name":null,"isActive":true}')
-        .replace('"p1":{"name":"Home"},', ''),
+        .replace('"bundleVersion":6500', '"bundleVersion":6501,"blocklistStatistics":{"hits":9},"lastSeenExecutableByCodeIdentifier":{"a":"b"}')
+        .replace('"factoryRuleSetVersion":12', '"factoryRuleSetVersion":13'),
     );
-    expect(verifyChange(before, after, { removedRefs: [], added: [] }).otherChanges).toEqual([
-      'The rule group "iCloud Services" is now on.',
-      'The profile "Home" is gone.',
-    ]);
+    expect(compareModels(before, after).ok).toBe(true);
+  });
+
+  it('reports a rule that was lost, and one that was not removed', () => {
+    const before = sampleModel();
+    const target = ref(before, 0);
+    const { model: next } = removeRule(before, target);
+    expect(compareModels(next, reexport(next), { removedRefs: [target] }).ok).toBe(true);
+    const unchanged = compareModels(next, reexport(before), { removedRefs: [target] });
+    expect(unchanged.ok).toBe(false);
+    expect(unchanged.notRemoved.map((entry) => entry.process)).toEqual([SAFARI]);
+    expect(unchanged.unexpected).toEqual([]);
+    const lost = compareModels(before, reexport(next));
+    expect(lost.missing.map((entry) => entry.process)).toEqual([SAFARI]);
+    expect(describeComparison(lost)).toBe('1 rule(s) missing');
+  });
+
+  it('accepts an update and reports an updated rule that vanished or kept its old form', () => {
+    const before = sampleModel();
+    const target = ref(before, 0);
+    const { model: next, after: updated } = updateRule(before, target, { action: 'deny' }, NOW);
+    expect(compareModels(next, reexport(next), { written: [updated], removedRefs: [target] }).ok).toBe(true);
+    const vanished = compareModels(next, reexport(removeRule(before, target).model), { written: [updated], removedRefs: [target] });
+    expect(vanished).toMatchObject({ ok: false, unexpected: [], notRemoved: [] });
+    expect(vanished.notApplied).toHaveLength(1);
+    const kept = compareModels(next, reexport(before), { written: [updated], removedRefs: [target] });
+    expect(kept.notApplied).toHaveLength(1);
+    expect(kept.notRemoved).toHaveLength(1);
+  });
+
+  it('counts identical rules, so a lost twin is noticed', () => {
+    const twins = parseModelText('{"rules":[{"action":"allow","process":"any","remote":"bonjour"},{"action":"allow","process":"any","remote":"bonjour"}]}');
+    const one = parseModelText('{"rules":[{"action":"allow","process":"any","remote":"bonjour"}]}');
+    expect(compareModels(twins, one).missing).toHaveLength(1);
+    expect(compareModels(one, twins).unexpected).toHaveLength(1);
+    expect(compareModels(twins, reexport(twins)).ok).toBe(true);
   });
 });

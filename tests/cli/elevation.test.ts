@@ -1,19 +1,32 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { classifySudo, createElevator, OSASCRIPT_PATH, SUDO_PATH, touchIdConfigured, type ElevationDeps } from '../../src/cli/elevation.js';
+import { classifySudo, createElevator, OSASCRIPT_PATH, SUDO_PATH, touchIdConfigured, type ElevationDeps, type Step } from '../../src/cli/elevation.js';
 import type { ElevationMode } from '../../src/config.js';
 import { LittleSnitchError } from '../../src/errors.js';
 import { fakeExec, result, SUDO_NEEDS_PASSWORD, SUDO_NO_TERMINAL, type Responder } from '../helpers/fakeExec.js';
 
 const CLI = '/Applications/Little Snitch.app/Contents/Components/littlesnitch';
 const TOKEN = 'abcdefghijklmnop0123';
+const PENDING = '/data/pending/change.json';
+const PENDING_TEXT = '{"rules":[]}';
+const PENDING_SHA = createHash('sha256').update(PENDING_TEXT).digest('hex');
 
-function setup(options: { mode: ElevationMode; touchId?: boolean; unattended?: boolean; responder: Responder }) {
+const RESTORE: Step = { args: ['restore-model', '--preserve-terminal-access', PENDING], write: true, input: { index: 2, sha256: PENDING_SHA } };
+const EXPORT: Step = { args: ['export-model'] };
+
+function setup(options: { mode: ElevationMode; touchId?: boolean; unattended?: boolean; responder: Responder; fileText?: string | null }) {
   const { exec, calls } = fakeExec(options.responder);
   const deps: ElevationDeps = {
     exec,
     config: { cliPath: CLI, elevation: options.mode, unattendedWrites: options.unattended ?? false, interactiveTimeoutMs: 300_000, commandTimeoutMs: 60_000 },
     touchIdConfigured: async () => options.touchId ?? false,
     randomToken: () => TOKEN,
+    readFile: async () => {
+      if (options.fileText === null) {
+        throw new Error('ENOENT');
+      }
+      return Buffer.from(options.fileText ?? PENDING_TEXT);
+    },
   };
   return { elevator: createElevator(deps), calls };
 }
@@ -47,23 +60,10 @@ describe('classifySudo', () => {
   });
 });
 
-describe('elevation "none"', () => {
-  it('runs the tool directly and stops at the first failure', async () => {
-    const { elevator, calls } = setup({
-      mode: 'none',
-      responder: ({ args }) => (args[0] === 'restore-model' ? { code: 1, stderr: 'bad file' } : { stdout: '{}' }),
-    });
-    const run = await elevator.run([{ args: ['restore-model', '/tmp/x'], write: true }, { args: ['export-model'] }], 'reason');
-    expect(run.method).toBe('direct');
-    expect(run.steps).toEqual([{ code: 1, stdout: '', stderr: 'bad file' }]);
-    expect(calls.map((call) => call.file)).toEqual([CLI]);
-  });
-});
-
-describe('elevation "auto"', () => {
-  it('uses sudo without a prompt for a read when sudo allows it', async () => {
+describe('reading', () => {
+  it('uses sudo without a prompt when sudo allows it', async () => {
     const { elevator, calls } = setup({ mode: 'auto', responder: () => ({ stdout: '{"rules":[]}' }) });
-    const run = await elevator.run([{ args: ['export-model'] }], 'reason');
+    const run = await elevator.run([EXPORT], 'reason');
     expect(run).toEqual({ method: 'sudo', steps: [{ code: 0, stdout: '{"rules":[]}', stderr: '' }] });
     expect(calls).toHaveLength(1);
     expect(calls[0]?.file).toBe(SUDO_PATH);
@@ -71,12 +71,12 @@ describe('elevation "auto"', () => {
     expect(calls[0]?.options.detached).toBe(true);
   });
 
-  it('falls back to the administrator dialog for a read when sudo needs a password and Touch ID is not set up', async () => {
+  it('falls back to the administrator dialog when sudo needs a password and Touch ID is not set up', async () => {
     const { elevator, calls } = setup({
       mode: 'auto',
       responder: ({ file }) => (file === SUDO_PATH ? SUDO_NEEDS_PASSWORD : { stdout: dialogOutput([{ code: 0, stdout: '{"rules":[]}' }]) }),
     });
-    const run = await elevator.run([{ args: ['export-model'] }], 'Please allow reading');
+    const run = await elevator.run([EXPORT], 'Please allow reading');
     expect(run).toEqual({ method: 'dialog', steps: [{ code: 0, stdout: '{"rules":[]}', stderr: '' }] });
     expect(calls.map((call) => call.file)).toEqual([SUDO_PATH, OSASCRIPT_PATH]);
     expect(calls[1]?.args.at(-1)).toBe('Please allow reading');
@@ -95,47 +95,20 @@ describe('elevation "auto"', () => {
     expect(calls[1]?.options.timeoutMs).toBe(300_000);
   });
 
-  it('never tries sudo without a prompt for a change: it goes straight to an approval', async () => {
-    const { elevator, calls } = setup({
-      mode: 'auto',
-      responder: ({ file }) => (file === OSASCRIPT_PATH ? { stdout: dialogOutput([{ code: 0, stdout: '' }, { code: 0, stdout: '{}' }]) } : undefined),
-    });
-    const run = await elevator.run([{ args: ['restore-model', '/tmp/x'], write: true }, { args: ['export-model'] }], 'Approve the change');
-    expect(run.method).toBe('dialog');
-    expect(run.steps).toHaveLength(2);
-    expect(calls.map((call) => call.file)).toEqual([OSASCRIPT_PATH]);
-  });
-
-  it('forces a fresh Touch ID for a change with sudo -k, then reads back without a new approval', async () => {
-    const { elevator, calls } = setup({ mode: 'auto', touchId: true, responder: () => ({ stdout: 'ok' }) });
-    await elevator.run([{ args: ['restore-model', '/tmp/x'], write: true }, { args: ['export-model'] }], 'reason');
-    expect(calls.map((call) => call.args)).toEqual([
-      ['-k', '--', CLI, 'restore-model', '/tmp/x'],
-      ['-n', '--', CLI, 'export-model'],
-    ]);
-  });
-
-  it('runs a change through sudo without a prompt only when unattended writes are switched on', async () => {
-    const { elevator, calls } = setup({ mode: 'auto', unattended: true, responder: () => ({ stdout: 'ok' }) });
-    const run = await elevator.run([{ args: ['profile', '--activate', 'Work'], write: true }], 'reason');
-    expect(run.method).toBe('sudo');
-    expect(calls[0]?.args).toEqual(['-n', '--', CLI, 'profile', '--activate', 'Work']);
-  });
-
   it('falls back to the administrator dialog when Touch ID through sudo does not work', async () => {
     const { elevator, calls } = setup({
       mode: 'auto',
       touchId: true,
       responder: ({ file }) => (file === SUDO_PATH ? SUDO_NO_TERMINAL : { stdout: dialogOutput([{ code: 0, stdout: '{}' }]) }),
     });
-    const run = await elevator.run([{ args: ['export-model'] }], 'reason');
+    const run = await elevator.run([EXPORT], 'reason');
     expect(run.method).toBe('dialog');
     expect(calls.map((call) => call.file)).toEqual([SUDO_PATH, SUDO_PATH, OSASCRIPT_PATH]);
   });
 
   it('reports a cancelled Touch ID as cancelled when the dialog is not allowed', async () => {
     const { elevator } = setup({ mode: 'sudo', touchId: true, responder: () => SUDO_NO_TERMINAL });
-    await expect(elevator.run([{ args: ['export-model'] }], 'reason')).rejects.toMatchObject({ kind: 'elevation-cancelled' });
+    await expect(elevator.run([EXPORT], 'reason')).rejects.toMatchObject({ kind: 'elevation-cancelled' });
   });
 
   it('reports a cancelled administrator dialog as cancelled', async () => {
@@ -143,36 +116,137 @@ describe('elevation "auto"', () => {
       mode: 'auto',
       responder: ({ file }) => (file === SUDO_PATH ? SUDO_NEEDS_PASSWORD : { code: 1, stderr: 'execution error: User canceled. (-128)\n' }),
     });
-    await expect(elevator.run([{ args: ['export-model'] }], 'reason')).rejects.toMatchObject({ kind: 'elevation-cancelled' });
+    await expect(elevator.run([EXPORT], 'reason')).rejects.toMatchObject({ kind: 'elevation-cancelled' });
   });
 
   it('reports an account that may not use sudo', async () => {
     const { elevator } = setup({ mode: 'auto', responder: () => ({ code: 1, stderr: 'sudo: guest is not in the sudoers file.\n' }) });
-    await expect(elevator.run([{ args: ['export-model'] }], 'reason')).rejects.toMatchObject({ kind: 'elevation-unavailable' });
+    await expect(elevator.run([EXPORT], 'reason')).rejects.toMatchObject({ kind: 'elevation-unavailable' });
   });
 
   it('passes the tool\'s own failure back instead of treating it as a sudo problem', async () => {
     const { elevator } = setup({ mode: 'auto', responder: () => ({ code: 14, stderr: 'littlesnitch must be run as root!\n' }) });
-    const run = await elevator.run([{ args: ['export-model'] }], 'reason');
+    const run = await elevator.run([EXPORT], 'reason');
     expect(run.steps).toEqual([{ code: 14, stdout: '', stderr: 'littlesnitch must be run as root!\n' }]);
   });
-});
 
-describe('elevation "sudo"', () => {
-  it('never opens the administrator dialog', async () => {
+  it('never opens the dialog with elevation "sudo"', async () => {
     const { elevator, calls } = setup({ mode: 'sudo', responder: () => SUDO_NEEDS_PASSWORD });
-    const error = await elevator.run([{ args: ['export-model'] }], 'reason').catch((caught: unknown) => caught);
+    const error = await elevator.run([EXPORT], 'reason').catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(LittleSnitchError);
     expect((error as LittleSnitchError).kind).toBe('elevation-unavailable');
     expect(calls.every((call) => call.file === SUDO_PATH)).toBe(true);
   });
+});
 
-  it('refuses a change that cannot be approved when Touch ID is not set up', async () => {
-    const { elevator, calls } = setup({ mode: 'sudo', responder: () => ({ stdout: 'ok' }) });
+describe('changing, when each change needs approval', () => {
+  it('goes through the administrator dialog and never through sudo, even when sudo would not ask', async () => {
+    const { elevator, calls } = setup({
+      mode: 'auto',
+      responder: ({ file }) => (file === OSASCRIPT_PATH ? { stdout: dialogOutput([{ code: 0, stdout: '' }, { code: 0, stdout: '{}' }]) } : { stdout: 'sudo would have run this silently' }),
+    });
+    const run = await elevator.run([RESTORE, EXPORT], 'Approve the change');
+    expect(run.method).toBe('dialog');
+    expect(run.steps).toHaveLength(2);
+    expect(calls.map((call) => call.file)).toEqual([OSASCRIPT_PATH]);
+    expect(calls[0]?.args.at(-1)).toBe('Approve the change');
+  });
+
+  it('uses the dialog with Touch ID set up as well, because sudo cannot promise a prompt', async () => {
+    const { elevator, calls } = setup({
+      mode: 'auto',
+      touchId: true,
+      responder: ({ file }) => (file === OSASCRIPT_PATH ? { stdout: dialogOutput([{ code: 0, stdout: '' }, { code: 0, stdout: '{}' }]) } : undefined),
+    });
+    await elevator.run([RESTORE, EXPORT], 'reason');
+    expect(calls.map((call) => call.file)).toEqual([OSASCRIPT_PATH]);
+  });
+
+  it('has root read the file from a private copy checked against its checksum', async () => {
+    const { elevator, calls } = setup({
+      mode: 'auto',
+      responder: () => ({ stdout: dialogOutput([{ code: 0, stdout: '' }, { code: 0, stdout: '{}' }]) }),
+    });
+    await elevator.run([RESTORE, EXPORT], 'reason');
+    const script = calls[0]?.args.at(-2) ?? '';
+    expect(script).toContain(`/bin/cp '${PENDING}' "$d/input"`);
+    expect(script).toContain(`= '${PENDING_SHA}' ]`);
+    expect(script).toContain(`'restore-model' '--preserve-terminal-access' "$d/input"`);
+    expect(script).not.toContain(`'--preserve-terminal-access' '${PENDING}'`);
+  });
+
+  it('refuses with elevation "sudo", which has no prompt it can rely on', async () => {
+    const { elevator, calls } = setup({ mode: 'sudo', touchId: true, responder: () => ({ stdout: 'ok' }) });
     await expect(elevator.run([{ args: ['profile', '--deactivate-all'], write: true }], 'reason')).rejects.toMatchObject({
       kind: 'elevation-unavailable',
+      message: expect.stringContaining('NOPASSWD'),
     });
     expect(calls).toHaveLength(0);
+  });
+
+  it('runs earlier reads through sudo and hands the change and everything after it to one dialog', async () => {
+    const { elevator, calls } = setup({
+      mode: 'auto',
+      responder: ({ file }) => (file === SUDO_PATH ? { stdout: 'before' } : { stdout: dialogOutput([{ code: 0, stdout: '' }, { code: 0, stdout: 'after' }]) }),
+    });
+    const run = await elevator.run([EXPORT, RESTORE, EXPORT], 'reason');
+    expect(run.steps.map((step) => step.stdout)).toEqual(['before', '', 'after']);
+    expect(calls.map((call) => call.file)).toEqual([SUDO_PATH, OSASCRIPT_PATH]);
+  });
+
+  it('returns what already ran when the change is cancelled after an earlier command', async () => {
+    const { elevator } = setup({
+      mode: 'auto',
+      responder: ({ file }) => (file === SUDO_PATH ? { stdout: 'before' } : { code: 1, stderr: 'execution error: User canceled. (-128)\n' }),
+    });
+    const run = await elevator.run([EXPORT, RESTORE], 'reason');
+    expect(run.steps).toEqual([{ code: 0, stdout: 'before', stderr: '' }]);
+  });
+});
+
+describe('changing, with unattended writes switched on', () => {
+  it('runs a change through sudo without a prompt when sudo allows it', async () => {
+    const { elevator, calls } = setup({ mode: 'auto', unattended: true, responder: () => ({ stdout: 'ok' }) });
+    const run = await elevator.run([{ args: ['profile', '--activate', 'Work'], write: true }], 'reason');
+    expect(run.method).toBe('sudo');
+    expect(calls[0]?.args).toEqual(['-n', '--', CLI, 'profile', '--activate', 'Work']);
+  });
+
+  it('checks the file against its checksum right before sudo runs', async () => {
+    const good = setup({ mode: 'auto', unattended: true, responder: () => ({ stdout: 'ok' }) });
+    await good.elevator.run([RESTORE], 'reason');
+    expect(good.calls[0]?.args).toEqual(['-n', '--', CLI, 'restore-model', '--preserve-terminal-access', PENDING]);
+
+    const swapped = setup({ mode: 'auto', unattended: true, fileText: '{"rules":[{"action":"allow"}]}', responder: () => ({ stdout: 'ok' }) });
+    await expect(swapped.elevator.run([RESTORE], 'reason')).rejects.toMatchObject({ kind: 'tampered' });
+    expect(swapped.calls).toHaveLength(0);
+
+    const gone = setup({ mode: 'none', fileText: null, responder: () => ({ stdout: 'ok' }) });
+    await expect(gone.elevator.run([RESTORE], 'reason')).rejects.toMatchObject({ kind: 'tampered' });
+    expect(gone.calls).toHaveLength(0);
+  });
+
+  it('reports the change as run when the read-back after it cannot get root', async () => {
+    const { elevator } = setup({
+      mode: 'sudo',
+      unattended: true,
+      responder: ({ args }) => (args.includes('restore-model') ? { stdout: '' } : SUDO_NEEDS_PASSWORD),
+    });
+    const run = await elevator.run([RESTORE, EXPORT], 'reason');
+    expect(run.steps).toEqual([{ code: 0, stdout: '', stderr: '' }]);
+  });
+});
+
+describe('elevation "none"', () => {
+  it('runs the tool directly and stops at the first failure', async () => {
+    const { elevator, calls } = setup({
+      mode: 'none',
+      responder: ({ args }) => (args[0] === 'restore-model' ? { code: 1, stderr: 'bad file' } : { stdout: '{}' }),
+    });
+    const run = await elevator.run([RESTORE, EXPORT], 'reason');
+    expect(run.method).toBe('direct');
+    expect(run.steps).toEqual([{ code: 1, stdout: '', stderr: 'bad file' }]);
+    expect(calls.map((call) => call.file)).toEqual([CLI]);
   });
 });
 
@@ -196,11 +270,11 @@ describe('elevation "dialog"', () => {
 describe('failures to run at all', () => {
   it('reports a timeout', async () => {
     const { elevator } = setup({ mode: 'auto', responder: () => ({ code: null, timedOut: true }) });
-    await expect(elevator.run([{ args: ['export-model'] }], 'reason')).rejects.toMatchObject({ kind: 'timeout' });
+    await expect(elevator.run([EXPORT], 'reason')).rejects.toMatchObject({ kind: 'timeout' });
   });
 
   it('reports a program that could not be started', async () => {
     const { elevator } = setup({ mode: 'none', responder: () => ({ code: null, spawnError: 'ENOENT' }) });
-    await expect(elevator.run([{ args: ['export-model'] }], 'reason')).rejects.toMatchObject({ kind: 'elevation-failed' });
+    await expect(elevator.run([EXPORT], 'reason')).rejects.toMatchObject({ kind: 'elevation-failed' });
   });
 });

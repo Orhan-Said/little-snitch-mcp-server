@@ -47,6 +47,8 @@ export interface HarnessOptions {
   readonly restoreBehaviors?: readonly string[];
   readonly switchesDoNothing?: boolean;
   readonly modelText?: string;
+  /** How many export-model calls fail after the first restore-model. */
+  readonly failExportsAfterRestore?: number;
 }
 
 export interface Harness {
@@ -76,6 +78,7 @@ export function installFake(root: string, options: HarnessOptions = {}): { reado
       root: options.root ?? true,
       restoreBehaviors: options.restoreBehaviors ?? [],
       switchesDoNothing: options.switchesDoNothing ?? false,
+      failExportsAfterRestore: options.failExportsAfterRestore ?? 0,
     }),
   );
   write('traffic.csv', TRAFFIC_CSV);

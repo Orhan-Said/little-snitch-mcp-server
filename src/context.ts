@@ -17,8 +17,32 @@ export interface ModelCache {
   clear(): void;
 }
 
+export interface ChangeQueue {
+  /** Runs one change at a time: after every change this server already started, and only while no other server is changing anything. */
+  run<T>(change: () => Promise<T>): Promise<T>;
+}
+
+export function createChangeQueue(store: Pick<Store, 'lock'>): ChangeQueue {
+  let last: Promise<unknown> = Promise.resolve();
+  return {
+    run<T>(change: () => Promise<T>): Promise<T> {
+      const next = last.then(async () => {
+        const release = await store.lock();
+        try {
+          return await change();
+        } finally {
+          await release();
+        }
+      });
+      last = next.catch(() => undefined);
+      return next;
+    },
+  };
+}
+
 export interface Context {
   readonly config: Config;
+  readonly changes: ChangeQueue;
   readonly cli: LittleSnitchCli;
   readonly binary: BinaryChecker;
   readonly store: Store;
@@ -74,11 +98,13 @@ export function createContext(config: Config, overrides: ContextOverrides = {}):
   const binary = createBinaryChecker(config.cliPath, exec);
   const elevator = createElevator({ exec, config, touchIdConfigured: touchId, randomToken: () => randomBytes(16).toString('hex') });
   const cli = createCli({ exec, elevator, binary, config });
+  const store = createStore(config.dataDir, now);
   return {
     config,
+    changes: createChangeQueue(store),
     cli,
     binary,
-    store: createStore(config.dataDir, now),
+    store,
     models: createModelCache(cli, now),
     touchId,
     now,

@@ -2,16 +2,24 @@
 
 `littlesnitch`, the command-line tool inside Little Snitch, refuses almost every command unless it runs as root. On Little Snitch 6.5 it prints `littlesnitch must be run as root!` and exits with code 14. Only `--version`, `log` and the check for "Allow access via Terminal" work without root.
 
-An MCP client starts this server without a terminal. `sudo` then has nowhere to ask for a password and fails with `sudo: a terminal is required to read the password`. The server needs another way to get your approval. It has two, and you choose with `--elevation`.
+An MCP client starts this server without a terminal. `sudo` then has nowhere to ask for a password and fails with `sudo: a terminal is required to read the password`. The server needs another way to get your approval.
+
+## Reading and changing are treated differently
+
+For a read, any way to root is fine, and the quietest one wins: `sudo` without a prompt, then Touch ID through `sudo`, then the administrator dialog.
+
+For a change, the server uses the administrator dialog and nothing else. The reason is that `sudo` cannot promise a prompt. If a `NOPASSWD` rule in `sudoers` matches, `sudo` runs the command and asks nobody, and the server has no way to see that rule in advance. The dialog asks every time.
+
+You can switch this off with `--unattended-writes`. Changes then take the same route as reads.
 
 ## The modes
 
-| `--elevation` | What happens when root is needed |
-|---|---|
-| `auto` (default) | The server first tries `sudo` without a prompt. If `sudo` wants a password and Touch ID for sudo is set up, macOS asks for your fingerprint. Otherwise the server opens the macOS administrator dialog. |
-| `sudo` | Like `auto`, but the server never opens the administrator dialog. Without Touch ID for sudo, privileged tools fail with an explanation. |
-| `dialog` | The server always opens the administrator dialog, for reads too. |
-| `none` | The server runs the tool directly. This works only when the server itself runs as root, and it is what the tests use. |
+| `--elevation` | Reads | Changes |
+|---|---|---|
+| `auto` (default) | `sudo` without a prompt, else Touch ID through `sudo`, else the administrator dialog | The administrator dialog |
+| `sudo` | `sudo` without a prompt, else Touch ID through `sudo`. Never the dialog. | Refused, unless `--unattended-writes` is on |
+| `dialog` | The administrator dialog | The administrator dialog |
+| `none` | The tool is run directly. Works only when the server itself runs as root. | The same, with no approval at all. Meant for the tests. |
 
 ## Touch ID for sudo
 
@@ -29,9 +37,11 @@ The second command removes the `#` in front of the `pam_tid.so` line. macOS keep
 
 After that, `sudo` asks for your fingerprint, also when a program without a terminal runs it. The torsday/little-snitch-mcp project tested exactly that case in April 2026. This project has not run it yet: the command lines the server builds for `sudo` are tested, the fingerprint prompt is not.
 
-macOS may remember an approval for a few minutes, so that several reads in a row need one touch. For a change, the server calls `sudo -k`, which makes `sudo` ignore a remembered approval. Each change gets its own prompt unless you start the server with `--unattended-writes`.
+macOS may remember an approval for a few minutes, so that several reads in a row need one touch.
 
-A Mac without a fingerprint reader cannot use this. Use the administrator dialog.
+Touch ID for sudo makes reading comfortable. It does not replace the administrator dialog for changes. If Touch ID does not work, for example with the lid closed, the server falls back to the dialog in `auto` mode.
+
+A Mac without a fingerprint reader cannot use this. The administrator dialog covers reads as well.
 
 ## The administrator dialog
 
@@ -50,9 +60,21 @@ macOS asks again for every call. To keep the number of prompts down, the server 
 - It runs a change and the read-back that checks it under one dialog.
 - It reuses the configuration it read for 15 seconds, so listing rules, groups and profiles in a row needs one prompt.
 
-A rule change still needs two prompts: one to read the current configuration and one to apply the change.
+A rule change needs one prompt for the change. Without Touch ID for sudo it needs a second one before that, to read the current configuration.
 
-The command string is the only place where the server builds shell text. It single-quotes every word and passes the string to AppleScript as an argument, so it never becomes part of the AppleScript source. `tests/cli/shell.test.ts` runs the generated strings through `/bin/sh` with quotes, spaces and shell characters in the arguments.
+The command string is the only place where the server builds shell text. It single-quotes every word and passes the string to AppleScript as an argument, so it never becomes part of the AppleScript source. `tests/cli/shell.test.ts` runs the generated strings through `/bin/sh` with quotes, spaces, line breaks and shell syntax in the arguments.
+
+### The private copy
+
+A changed configuration is a file in the server's data folder, which your own programs can write to. If root read it from there, another program could swap it after you approved. So for a restore, the script that runs as root does this:
+
+1. It makes a folder with `mktemp -d` inside `/private/var/root`, root's home folder. `mktemp` gives the new folder mode 700, so only root can enter it.
+2. It copies the file into that folder.
+3. It computes the SHA-256 of the copy with `/usr/bin/shasum` and compares it with the checksum the server noted when it wrote the file.
+4. If they match, it has Little Snitch restore the copy. If not, it prints an error, exits with code 97 and runs nothing.
+5. It removes the folder.
+
+The tests run this script with `/bin/sh` and a temporary folder in place of `/private/var/root`: a matching file, a swapped file, a missing file and a tool that fails.
 
 ## Why there is no sudoers recipe here
 
@@ -68,7 +90,9 @@ Do not add it. It weakens your Mac in three ways:
 - `littlesnitch export-model <file>` writes its output to any path as root. A program could overwrite system files with it.
 - `/Applications` is writable by the `admin` group. A program running as an administrator could put its own file at that path and have `sudo` run it as root.
 
-The server does use `sudo` without a prompt when your system allows it, because it tries that first. If you decide to write your own rule, allow exact command lines such as `littlesnitch export-model` with no further arguments, never the whole tool. This project does not ship or test such a rule.
+The server does use `sudo` without a prompt for reading when your system allows it, because it tries that first. `get_status` tells you when that is the case. Changes still go through the administrator dialog, unless you switched on `--unattended-writes`.
+
+If you decide to write your own rule, allow exact command lines such as `littlesnitch export-model` with no further arguments, never the whole tool. This project does not ship or test such a rule.
 
 ## What the server checks before it uses root
 
@@ -77,6 +101,7 @@ Before each privileged run, unless the mode is `none`:
 1. The tool at the configured path exists and is a regular file.
 2. Its owner is root.
 3. Neither its group nor other users can write to it.
-4. `codesign --verify --strict` accepts it against the requirement `identifier "littlesnitch" and anchor apple generic and certificate leaf[subject.OU] = "MLZF7K7B5R"`. That is Objective Development's Apple developer team.
+4. The path is not a symbolic link.
+5. `codesign --verify --strict` accepts it against the requirement `identifier "littlesnitch" and anchor apple generic and certificate leaf[subject.OU] = "MLZF7K7B5R"`. That is Objective Development's Apple developer team.
 
 The server repeats the signature check when the file's inode, size or modification time changes. There is still a short moment between the check and the run in which the file could be swapped. The check raises the cost of that attack. It does not rule it out.

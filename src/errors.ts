@@ -18,6 +18,8 @@ export type ErrorKind =
   | 'ambiguous'
   | 'protected'
   | 'unexpected-output'
+  | 'busy'
+  | 'tampered'
   | 'verification-failed';
 
 export interface ErrorDetails {

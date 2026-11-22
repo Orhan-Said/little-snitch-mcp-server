@@ -33,10 +33,19 @@ const HOSTNAME = /^(?=.{1,253}$)([a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9_])?)(\.[a-z0-
 const IPV4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
 const IPV6 = /^[0-9a-f:]{2,39}$/i;
 
+/** Control and formatting characters. In a path or a note they can hide or reorder what an approval prompt shows. */
+const HIDDEN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+
 const invalid = (message: string): LittleSnitchError => new LittleSnitchError('invalid-input', message);
 
+function assertPlainNotes(notes: string): void {
+  if (notes.length > 500 || HIDDEN.test(notes)) {
+    throw invalid('Notes must be at most 500 characters on one line, without control or invisible characters.');
+  }
+}
+
 function assertExecutablePath(kind: string, value: string): void {
-  if (!path.isAbsolute(value) || /[\u0000-\u001f\u007f]/.test(value) || value.length > 1024) {
+  if (!path.isAbsolute(value) || HIDDEN.test(value) || value.length > 1024) {
     throw invalid(`The ${kind} must be an absolute path to an executable, such as /Applications/Safari.app/Contents/MacOS/Safari.`);
   }
   if (value.endsWith('.app') || value.endsWith('.app/')) {
@@ -118,8 +127,8 @@ export function validateNewRule(spec: NewRuleSpec): void {
   if (spec.ports !== undefined) {
     assertPorts(spec.ports);
   }
-  if (spec.notes !== undefined && (spec.notes.length > 500 || /[\u0000-\u0008\u000b-\u001f\u007f]/.test(spec.notes))) {
-    throw invalid('Notes must be at most 500 characters of plain text.');
+  if (spec.notes !== undefined) {
+    assertPlainNotes(spec.notes);
   }
 }
 
@@ -206,8 +215,8 @@ export function updateRule(
 ): { readonly model: JsonObject; readonly before: JsonObject; readonly after: JsonObject } {
   const { index, rule } = findRule(model, ref);
   assertEditable(rule, ref);
-  if (patch.notes !== undefined && (patch.notes.length > 500 || /[\u0000-\u0008\u000b-\u001f\u007f]/.test(patch.notes))) {
-    throw invalid('Notes must be at most 500 characters of plain text.');
+  if (patch.notes !== undefined) {
+    assertPlainNotes(patch.notes);
   }
   const changes: JsonObject = {
     ...(patch.action === undefined || patch.action === asString(rule['action']) ? {} : { action: patch.action }),

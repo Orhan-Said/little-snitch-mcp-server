@@ -108,29 +108,52 @@ describe('get_status across setups', () => {
     expect(result.toDo[0]).toContain('Optional: set up Touch ID for sudo');
   });
 
-  it('describes Touch ID approvals when Touch ID for sudo is set up', async () => {
+  it('uses Touch ID for reading only: a change still goes through the password dialog', async () => {
     const result = await status(['--allow', 'switches'], { touchId: true, sudoWorks: false });
     expect(result.rootAccess.approvalForReads).toBe('Touch ID (macOS may not ask again for a few minutes)');
-    expect(result.rootAccess.approvalForChanges).toBe('Touch ID for each change');
+    expect(result.rootAccess.approvalForChanges).toBe('the macOS administrator password dialog, for each change');
     expect(result.toDo).toEqual([]);
   });
 
-  it('still asks for each change when sudo runs without asking', async () => {
-    const result = await status(['--allow', 'rules'], { touchId: false, sudoWorks: true });
+  it('still asks for each change when sudo runs without asking, and warns about that sudo rule', async () => {
+    const result = await status(['--allow', 'rules'], { touchId: true, sudoWorks: true });
     expect(result.rootAccess.approvalForReads).toBe('none: sudo runs the tool without asking');
     expect(result.rootAccess.approvalForChanges).toBe('the macOS administrator password dialog, for each change');
+    expect(result.toDo).toHaveLength(1);
+    expect(result.toDo[0]).toContain('sudo runs the Little Snitch tool without asking');
   });
 
-  it('says changes need no approval only with unattended writes and a sudo that does not ask', async () => {
+  it('says in capitals that changes need no approval with unattended writes and a sudo that does not ask', async () => {
     const result = await status(['--allow', 'rules', '--unattended-writes'], { touchId: false, sudoWorks: true });
-    expect(result.rootAccess.approvalForChanges).toBe('none: unattended writes are switched on and sudo runs the tool without asking');
+    expect(result.rootAccess.approvalForChanges).toBe('NONE: unattended writes are switched on and sudo runs the tool without asking');
+  });
+
+  it('describes unattended writes with Touch ID as possibly without any prompt', async () => {
+    const result = await status(['--allow', 'rules', '--unattended-writes'], { touchId: true, sudoWorks: false });
+    expect(result.rootAccess.approvalForChanges).toBe(
+      'unattended writes are switched on: Touch ID, or no prompt at all while an earlier approval is still remembered',
+    );
+  });
+
+  it('says that elevation "sudo" cannot guarantee an approval for a change', async () => {
+    const result = await status(['--elevation', 'sudo', '--allow', 'rules'], { touchId: true, sudoWorks: false });
+    expect(result.rootAccess.approvalForReads).toBe('Touch ID (macOS may not ask again for a few minutes)');
+    expect(result.rootAccess.approvalForChanges).toBe(
+      'not possible: elevation "sudo" cannot make sure each change is approved; use "auto" or "dialog", or switch on unattended writes',
+    );
   });
 
   it('says what is missing with elevation "sudo" and no Touch ID', async () => {
     const result = await status(['--elevation', 'sudo', '--allow', 'rules'], { touchId: false, sudoWorks: false });
     expect(result.rootAccess.approvalForReads).toContain('not possible yet');
-    expect(result.rootAccess.approvalForChanges).toContain('not possible yet');
+    expect(result.rootAccess.approvalForChanges).toContain('not possible:');
     expect(result.toDo[0]).toContain('Touch ID for sudo');
+  });
+
+  it('says in capitals that elevation "none" asks nobody', async () => {
+    const result = await status(['--elevation', 'none', '--allow', 'rules'], { touchId: false, sudoWorks: false });
+    expect(result.rootAccess.approvalForChanges).toBe('NONE: with elevation "none" the tool is run directly and nobody is asked');
+    expect(result.toDo).toEqual(['Elevation "none" is meant for tests: the assistant can make the allowed changes without anyone approving them.']);
   });
 
   it('always uses the dialog with elevation "dialog" and never probes sudo', async () => {

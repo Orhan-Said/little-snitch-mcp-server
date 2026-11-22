@@ -1,15 +1,15 @@
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import type { Config } from '../config.js';
 import { ELEVATION_REMEDY, LittleSnitchError } from '../errors.js';
 import type { ExecFn, ExecResult } from './exec.js';
-import { adminDialogArgs, buildCompoundScript, parseCompoundOutput, type StepOutput } from './shell.js';
+import { adminDialogArgs, buildCompoundScript, parseCompoundOutput, type ScriptStep, type StepOutput } from './shell.js';
 
 export const SUDO_PATH = '/usr/bin/sudo';
 export const OSASCRIPT_PATH = '/usr/bin/osascript';
 
 /** One run of the littlesnitch tool as root. `write` marks a command that changes the firewall. */
-export interface Step {
-  readonly args: readonly string[];
+export interface Step extends ScriptStep {
   readonly write?: boolean;
 }
 
@@ -32,6 +32,7 @@ export interface ElevationDeps {
   /** True when sudo accepts Touch ID (pam_tid), so it can ask without a terminal. */
   readonly touchIdConfigured: () => Promise<boolean>;
   readonly randomToken: () => string;
+  readonly readFile?: (file: string) => Promise<Buffer>;
 }
 
 type SudoOutcome =
@@ -83,16 +84,48 @@ export function classifySudo(result: ExecResult): SudoOutcome {
   return { kind: 'ran', output: { code: result.code ?? -1, stdout: result.stdout, stderr: result.stderr } };
 }
 
+/**
+ * Decides how each command gets root.
+ *
+ * A read may use whatever works without bothering the person: sudo that does
+ * not ask, then Touch ID through sudo, then the administrator dialog.
+ *
+ * A change is different. Unless unattended writes are switched on, it always
+ * goes through the administrator dialog, because that is the only route this
+ * server can rely on to show a prompt: sudo asks nobody when a NOPASSWD rule
+ * matches, and nothing here can see such a rule. Under the dialog, an input
+ * file is also read from a copy only root can reach (see shell.ts).
+ */
 export function createElevator(deps: ElevationDeps): Elevator {
   const { exec, config } = deps;
+  const read = deps.readFile ?? ((file: string) => readFile(file));
+
+  /** Without the dialog there is no root-only copy, so the file is checked right before the run. A short gap remains. */
+  const checkInput = async (step: Step): Promise<void> => {
+    if (step.input === undefined) {
+      return;
+    }
+    const file = step.args[step.input.index] ?? '';
+    let actual: string;
+    try {
+      actual = createHash('sha256').update(await read(file)).digest('hex');
+    } catch {
+      throw new LittleSnitchError('tampered', 'The file to restore is gone. Nothing was run.');
+    }
+    if (actual !== step.input.sha256) {
+      throw new LittleSnitchError('tampered', 'The file to restore is not the file that was written. Nothing was run.');
+    }
+  };
 
   const direct = async (step: Step): Promise<StepOutput> => {
+    await checkInput(step);
     const result = await exec(config.cliPath, step.args, { timeoutMs: config.commandTimeoutMs });
     checkStarted(result, 'littlesnitch');
     return { code: result.code ?? -1, stdout: result.stdout, stderr: result.stderr };
   };
 
   const sudo = async (step: Step, flags: readonly string[], interactive: boolean): Promise<SudoOutcome> => {
+    await checkInput(step);
     const result = await exec(SUDO_PATH, [...flags, '--', config.cliPath, ...step.args], {
       timeoutMs: interactive ? config.interactiveTimeoutMs : config.commandTimeoutMs,
       detached: true,
@@ -103,7 +136,7 @@ export function createElevator(deps: ElevationDeps): Elevator {
 
   const dialog = async (steps: readonly Step[], reason: string): Promise<readonly StepOutput[]> => {
     const token = deps.randomToken();
-    const script = buildCompoundScript(config.cliPath, steps.map((step) => step.args), token);
+    const script = buildCompoundScript(config.cliPath, steps, token);
     const result = await exec(OSASCRIPT_PATH, adminDialogArgs(script, reason), { timeoutMs: config.interactiveTimeoutMs });
     checkStarted(result, 'the administrator dialog');
     if (result.code !== 0) {
@@ -141,44 +174,43 @@ export function createElevator(deps: ElevationDeps): Elevator {
       return { method: 'dialog', steps: await dialog(steps, reason) };
     }
 
-    for (const [index, step] of steps.entries()) {
-      const mustApprove = step.write === true && !config.unattendedWrites;
-      let outcome: SudoOutcome | undefined;
-
-      if (!mustApprove) {
-        outcome = await sudo(step, ['-n'], false);
-        method = 'sudo';
-      }
-
-      if (outcome === undefined || outcome.kind === 'needs-auth') {
-        if (await deps.touchIdConfigured()) {
-          // -k makes sudo ignore a cached approval, so each change gets its own Touch ID.
-          outcome = await sudo(step, mustApprove ? ['-k'] : [], true);
-          method = 'sudo-interactive';
-          if (outcome.kind === 'needs-auth' && config.elevation === 'auto') {
-            // Touch ID did not work, for example with the lid closed. The password dialog still can.
-            const rest = await dialog(steps.slice(index), reason);
-            return { method: 'dialog', steps: [...outputs, ...rest] };
-          }
-          if (outcome.kind === 'needs-auth') {
-            throw new LittleSnitchError('elevation-cancelled', 'Touch ID was cancelled or not available, so nothing was run.', {
-              remedy: ELEVATION_REMEDY,
-            });
-          }
-        } else if (config.elevation === 'auto') {
-          const rest = await dialog(steps.slice(index), reason);
-          return { method: 'dialog', steps: [...outputs, ...rest] };
-        } else {
+    /** Runs one step, or hands it and all later steps to the dialog. Returns "done" when the dialog finished the list. */
+    const runFrom = async (index: number, step: Step): Promise<'next' | 'stop' | 'done'> => {
+      if (step.write === true && !config.unattendedWrites) {
+        if (config.elevation === 'sudo') {
           throw new LittleSnitchError(
             'elevation-unavailable',
-            mustApprove
-              ? 'A change needs your approval, and with elevation "sudo" that takes Touch ID for sudo, which is not set up.'
-              : 'sudo asked for a password, and this server cannot type one.',
+            'With elevation "sudo" this server cannot make sure that you approve each change: sudo asks nobody when a NOPASSWD rule matches.',
+            { remedy: 'Start the server with elevation "auto" or "dialog", so each change goes through the administrator dialog. Or switch on unattended writes if changes without a prompt are what you want.' },
+          );
+        }
+        outputs.push(...(await dialog(steps.slice(index), reason)));
+        method = 'dialog';
+        return 'done';
+      }
+
+      let outcome = await sudo(step, ['-n'], false);
+      method = 'sudo';
+      if (outcome.kind === 'needs-auth') {
+        const touchId = await deps.touchIdConfigured();
+        if (touchId) {
+          outcome = await sudo(step, [], true);
+          method = 'sudo-interactive';
+        }
+        if (outcome.kind === 'needs-auth') {
+          if (config.elevation === 'auto') {
+            // No Touch ID, or it did not work (a closed lid, a cancelled prompt). The password dialog still can.
+            outputs.push(...(await dialog(steps.slice(index), reason)));
+            method = 'dialog';
+            return 'done';
+          }
+          throw new LittleSnitchError(
+            touchId ? 'elevation-cancelled' : 'elevation-unavailable',
+            touchId ? 'Touch ID was cancelled or not available, so nothing was run.' : 'sudo asked for a password, and this server cannot type one.',
             { remedy: ELEVATION_REMEDY },
           );
         }
       }
-
       if (outcome.kind === 'not-permitted') {
         throw new LittleSnitchError('elevation-unavailable', `sudo refused: ${outcome.stderr}`, {
           remedy: 'This macOS account may not use sudo. Use an administrator account, or elevation "dialog" to enter an administrator\'s name and password.',
@@ -188,7 +220,21 @@ export function createElevator(deps: ElevationDeps): Elevator {
         throw new LittleSnitchError('elevation-failed', `sudo failed: ${outcome.stderr}`);
       }
       outputs.push(outcome.output);
-      if (outcome.output.code !== 0) {
+      return outcome.output.code === 0 ? 'next' : 'stop';
+    };
+
+    for (const [index, step] of steps.entries()) {
+      let state: 'next' | 'stop' | 'done';
+      try {
+        state = await runFrom(index, step);
+      } catch (error) {
+        if (outputs.length === 0) {
+          throw error;
+        }
+        // An earlier command already ran. The caller must learn that, so the list is returned as far as it got.
+        break;
+      }
+      if (state !== 'next') {
         break;
       }
     }

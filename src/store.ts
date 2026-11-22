@@ -29,10 +29,27 @@ export interface Store {
   writePending(text: string): Promise<string>;
   removePending(file: string): Promise<void>;
   audit(entry: AuditEntry): Promise<void>;
+  /**
+   * Takes the lock that keeps two changes from running at once, also when two
+   * copies of this server run. Returns the function that gives it back.
+   * Throws "busy" when another change holds it.
+   */
+  lock(): Promise<() => Promise<void>>;
   readonly dir: string;
 }
 
 const KEEP_BACKUPS = 50;
+/** A lock older than this belongs to a change that cannot still be running: approvals time out after five minutes each. */
+const LOCK_STALE_MS = 20 * 60_000;
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
 const BACKUP_NAME = /^\d{8}T\d{6}Z-[a-z0-9-]{1,40}-[0-9a-f]{6}\.json$/;
 
 /**
@@ -106,6 +123,37 @@ export function createStore(dataDir: string, now: () => Date = () => new Date())
       if (path.dirname(file) === pendingDir) {
         await rm(file, { force: true });
       }
+    },
+
+    async lock() {
+      await ensure(dataDir);
+      const file = path.join(dataDir, 'change.lock');
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          await writeFile(file, JSON.stringify({ pid: process.pid, since: now().toISOString() }), { mode: 0o600, flag: 'wx' });
+          return async () => {
+            await rm(file, { force: true });
+          };
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+            throw error;
+          }
+        }
+        let holder: { pid?: unknown; since?: unknown } = {};
+        try {
+          holder = JSON.parse(await readFile(file, 'utf8')) as { pid?: unknown; since?: unknown };
+        } catch {
+          // An unreadable lock file is treated as left over.
+        }
+        const since = typeof holder.since === 'string' ? Date.parse(holder.since) : Number.NaN;
+        const fresh = !Number.isNaN(since) && now().getTime() - since < LOCK_STALE_MS;
+        if (typeof holder.pid === 'number' && fresh && processIsAlive(holder.pid)) {
+          throw new LittleSnitchError('busy', `Another change to Little Snitch is in progress (started ${String(holder.since)}). Try again when it has finished.`);
+        }
+        // Left over from a server that stopped in the middle of a change.
+        await rm(file, { force: true });
+      }
+      throw new LittleSnitchError('busy', 'Another change to Little Snitch is in progress. Try again when it has finished.');
     },
 
     async audit(entry) {

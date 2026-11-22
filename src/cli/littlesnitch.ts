@@ -3,7 +3,7 @@ import { LittleSnitchError, TERMINAL_ACCESS_REMEDY } from '../errors.js';
 import type { BinaryChecker } from './binary.js';
 import { SUDO_PATH, type Elevator, type Method, type Step } from './elevation.js';
 import type { ExecFn } from './exec.js';
-import type { StepOutput } from './shell.js';
+import { INPUT_CHANGED_EXIT, INPUT_CHANGED_MESSAGE, type StepOutput } from './shell.js';
 
 export type TerminalAccess = 'enabled' | 'disabled' | 'unknown';
 
@@ -23,8 +23,11 @@ export interface LittleSnitchCli {
   activateProfile(name: string): Promise<ChangeResult>;
   deactivateAllProfiles(): Promise<ChangeResult>;
   setRuleGroupEnabled(name: string, enabled: boolean): Promise<ChangeResult>;
-  /** Replaces the whole configuration with the file's. */
-  restoreModel(file: string, reason: string): Promise<ChangeResult>;
+  /**
+   * Replaces the whole configuration with the file's. `sha256` is the checksum of
+   * the content the caller means; a file with other content is refused before anything runs.
+   */
+  restoreModel(file: string, sha256: string, reason: string): Promise<ChangeResult>;
 }
 
 export type PreferenceScope = 'all' | 'global' | 'user';
@@ -50,6 +53,9 @@ function firstLines(text: string): string {
 /** Turns a failed run of the tool into the error a person can act on. */
 export function failure(step: StepOutput, what: string): LittleSnitchError {
   const text = `${step.stderr}\n${step.stdout}`;
+  if (step.code === INPUT_CHANGED_EXIT && text.includes(INPUT_CHANGED_MESSAGE)) {
+    return new LittleSnitchError('tampered', 'The file to restore is not the file that was written. Nothing was run.');
+  }
   if (/not authorized/i.test(text) && /enable access/i.test(text)) {
     return new LittleSnitchError('terminal-access-disabled', 'Little Snitch does not allow its command-line tool to be used yet.', {
       remedy: TERMINAL_ACCESS_REMEDY,
@@ -71,8 +77,8 @@ export function assertSafeName(kind: string, name: string): void {
   if (name.startsWith('-')) {
     throw new LittleSnitchError('invalid-input', `The ${kind} name must not start with "-".`);
   }
-  if (/[\u0000-\u001f\u007f]/.test(name)) {
-    throw new LittleSnitchError('invalid-input', `The ${kind} name must not contain control characters.`);
+  if (/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(name)) {
+    throw new LittleSnitchError('invalid-input', `The ${kind} name must not contain control characters or invisible characters.`);
   }
 }
 
@@ -117,8 +123,9 @@ export function createCli(deps: CliDeps): LittleSnitchCli {
   };
 
   /** Runs one change and then reads the configuration back, under a single approval where the method allows it. */
-  const writeThenExport = async (args: readonly string[], what: string, reason: string): Promise<ChangeResult> => {
-    const { outputs, method } = await elevated([{ args, write: true }, { args: ['export-model'] }], reason);
+  const writeThenExport = async (args: readonly string[], what: string, reason: string, input?: Step['input']): Promise<ChangeResult> => {
+    const change: Step = input === undefined ? { args, write: true } : { args, write: true, input };
+    const { outputs, method } = await elevated([change, { args: ['export-model'] }], reason);
     const changed = outputs[0];
     if (changed === undefined) {
       throw new LittleSnitchError('unexpected-output', `Little Snitch gave no result when asked to ${what}.`);
@@ -216,8 +223,8 @@ export function createCli(deps: CliDeps): LittleSnitchCli {
       );
     },
 
-    async restoreModel(file, reason) {
-      return writeThenExport(['restore-model', '--preserve-terminal-access', file], 'apply the change', reason);
+    async restoreModel(file, sha256, reason) {
+      return writeThenExport(['restore-model', '--preserve-terminal-access', file], 'apply the change', reason, { index: 2, sha256 });
     },
   };
 }

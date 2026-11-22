@@ -1,28 +1,31 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { applyModelChange } from '../apply.js';
+import { applyModelChange, restoreVerified } from '../apply.js';
+import { assertFitsPrompt, prompts, ruleText, shown } from '../approval.js';
 import type { Context } from '../context.js';
 import { LittleSnitchError } from '../errors.js';
 import { addRule, buildRule, removeRule, SPECIAL_REMOTES, updateRule, validateNewRule, type NewRuleSpec, type RulePatch } from '../model/edit.js';
 import { groupDisplayNames, resolveGroup, summarizeGroups } from '../model/groups.js';
-import { asNumber, parseModelText, rulesOf, type JsonObject } from '../model/json.js';
+import { asNumber, asString, parseModelText, rulesOf, sha256, type JsonObject } from '../model/json.js';
 import { activeProfile, resolveProfile } from '../model/profiles.js';
-import { describeRemote, remoteOf, ruleRef, semanticKey, summarizeRule, type RuleSummary } from '../model/rules.js';
-import { verifyChange } from '../model/verify.js';
+import { ruleRef, semanticKey, summarizeRule, tolerantKey, type RuleSummary } from '../model/rules.js';
+import { compareModels } from '../model/verify.js';
 import { NAME_CACHE_MS, safely } from './shared.js';
 
 const REF = z.string().regex(/^r[0-9a-f]{12}$/, 'A rule reference looks like r1a2b3c4d5e6f, as list_rules shows it.');
 const DRY_RUN = z.boolean().optional().describe('When true, nothing is changed: the result shows what would happen.');
-const APPROVAL = 'The person at the Mac approves each change with Touch ID or the administrator password, unless they switched that off.';
+const APPROVAL =
+  'The person at the Mac approves each change in the macOS administrator dialog, which states the change, unless they switched that off. ' +
+  'Afterwards the whole configuration is read back and compared; if anything differs from what was intended, the change is undone.';
 
 function summarize(rule: JsonObject, model: JsonObject): RuleSummary {
   return summarizeRule(rule, groupDisplayNames(model));
 }
 
-/** Finds, in the configuration read back, the rule that now carries the requested meaning. */
-function readBack(after: JsonObject, wanted: JsonObject): RuleSummary | null {
-  const key = semanticKey(wanted);
-  const found = rulesOf(after).findLast((rule) => semanticKey(rule) === key);
+/** Finds, in the configuration read back, the rule that was written. */
+function readBack(after: JsonObject, written: JsonObject): RuleSummary | null {
+  const key = tolerantKey(written);
+  const found = rulesOf(after).findLast((rule) => tolerantKey(rule) === key);
   return found === undefined ? null : summarize(found, after);
 }
 
@@ -33,35 +36,37 @@ function registerSwitchTools(server: McpServer, ctx: Context): void {
       title: 'Switch profile',
       description:
         'Activate a Little Snitch profile by its exact name, or deactivate all profiles. A profile changes which rules apply, so it can loosen or tighten the firewall; ' +
-        `say which profile you are switching to and why before calling. ${APPROVAL}`,
+        'say which profile you are switching to and why before calling. The person at the Mac approves the switch in the macOS administrator dialog, unless they switched that off.',
       inputSchema: {
         profile: z.string().max(200).nullable().describe('Exact profile name as list_profiles shows it, or null to deactivate all profiles.'),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false, title: 'Switch profile' },
     },
-    safely(async ({ profile }) => {
-      if (profile !== null) {
-        resolveProfile(await ctx.models.get(NAME_CACHE_MS), profile);
-      }
-      const summary = profile === null ? 'deactivate all profiles' : `activate profile "${profile}"`;
-      ctx.models.clear();
-      const result = profile === null ? await ctx.cli.deactivateAllProfiles() : await ctx.cli.activateProfile(profile);
-      const after = parseModelText(result.modelText);
-      ctx.models.put(after);
-      const active = activeProfile(after, ctx.uid);
-      if (active.known && active.name !== profile) {
-        await ctx.store.audit({ tool: 'set_active_profile', summary, outcome: 'failed', method: result.method, detail: `active is ${String(active.name)}` });
-        throw new LittleSnitchError('verification-failed', `Little Snitch accepted the request, but the active profile reads as ${active.name === null ? 'none' : `"${active.name}"`}.`);
-      }
-      await ctx.store.audit({ tool: 'set_active_profile', summary, outcome: 'applied', method: result.method });
-      return {
-        applied: true,
-        activeProfile: profile,
-        confirmedByReadBack: active.known,
-        ...(active.known ? {} : { note: 'Little Snitch accepted the request. The configuration does not say which profile is active in a form this server recognises, so it was not double-checked.' }),
-        approvedThrough: result.method,
-      };
-    }),
+    safely(({ profile }) =>
+      ctx.changes.run(async () => {
+        if (profile !== null) {
+          resolveProfile(await ctx.models.get(NAME_CACHE_MS), profile);
+        }
+        const summary = profile === null ? 'deactivate all profiles' : `activate profile "${shown(profile, 80)}"`;
+        ctx.models.clear();
+        const result = profile === null ? await ctx.cli.deactivateAllProfiles() : await ctx.cli.activateProfile(profile);
+        const after = parseModelText(result.modelText);
+        ctx.models.put(after);
+        const active = activeProfile(after, ctx.uid);
+        if (active.known && active.name !== profile) {
+          await ctx.store.audit({ tool: 'set_active_profile', summary, outcome: 'failed', method: result.method, detail: `active is ${String(active.name)}` });
+          throw new LittleSnitchError('verification-failed', `Little Snitch accepted the request, but the active profile reads as ${active.name === null ? 'none' : `"${active.name}"`}.`);
+        }
+        await ctx.store.audit({ tool: 'set_active_profile', summary, outcome: 'applied', method: result.method });
+        return {
+          applied: true,
+          activeProfile: profile,
+          confirmedByReadBack: active.known,
+          ...(active.known ? {} : { note: 'Little Snitch accepted the request. The configuration does not say which profile is active in a form this server recognises, so it was not double-checked.' }),
+          approvedThrough: result.method,
+        };
+      }),
+    ),
   );
 
   server.registerTool(
@@ -69,36 +74,38 @@ function registerSwitchTools(server: McpServer, ctx: Context): void {
     {
       title: 'Switch a rule group or blocklist on or off',
       description:
-        'Switch a Little Snitch rule group or blocklist on or off, by the id or name list_rule_groups shows. Switching a group off stops its rules from applying, ' +
-        `which can loosen the firewall; say what you are switching and why before calling. ${APPROVAL}`,
+        'Switch a Little Snitch rule group or blocklist on or off, by the exact id or name list_rule_groups shows. Switching a group off stops its rules from applying, ' +
+        'which can loosen the firewall; say what you are switching and why before calling. The person at the Mac approves the switch in the macOS administrator dialog, unless they switched that off.',
       inputSchema: {
-        group: z.string().min(1).max(200).describe('The group\'s id or its name, as list_rule_groups shows it.'),
+        group: z.string().min(1).max(200).describe('The group\'s id or its exact name, as list_rule_groups shows it.'),
         enabled: z.boolean().describe('true switches the group on, false switches it off.'),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false, title: 'Switch a rule group or blocklist' },
     },
-    safely(async ({ group, enabled }) => {
-      const target = resolveGroup(await ctx.models.get(NAME_CACHE_MS), group);
-      if (target.name === null) {
-        throw new LittleSnitchError(
-          'not-found',
-          `The built-in group with kind "${target.kind ?? 'unknown'}" has no name in the configuration, and Little Snitch only accepts a name. Switch it in Little Snitch itself.`,
-          { remedy: 'Please report this group kind and the name Little Snitch shows for it, so it can be added.' },
-        );
-      }
-      const summary = `switch rule group "${target.name}" ${enabled ? 'on' : 'off'}`;
-      ctx.models.clear();
-      const result = await ctx.cli.setRuleGroupEnabled(target.name, enabled);
-      const after = parseModelText(result.modelText);
-      ctx.models.put(after);
-      const now = summarizeGroups(after).find((entry) => entry.id === target.id);
-      if (now === undefined || now.active !== enabled) {
-        await ctx.store.audit({ tool: 'set_rule_group_enabled', summary, outcome: 'failed', method: result.method });
-        throw new LittleSnitchError('verification-failed', `Little Snitch accepted the request, but the group "${target.name}" does not read as ${enabled ? 'on' : 'off'}.`);
-      }
-      await ctx.store.audit({ tool: 'set_rule_group_enabled', summary, outcome: 'applied', method: result.method });
-      return { applied: true, group: { id: target.id, name: target.name }, enabled, confirmedByReadBack: true, approvedThrough: result.method };
-    }),
+    safely(({ group, enabled }) =>
+      ctx.changes.run(async () => {
+        const target = resolveGroup(await ctx.models.get(NAME_CACHE_MS), group);
+        if (target.name === null) {
+          throw new LittleSnitchError(
+            'not-found',
+            `The built-in group with kind "${target.kind ?? 'unknown'}" has no name in the configuration, and Little Snitch only accepts a name. Switch it in Little Snitch itself.`,
+            { remedy: 'Please report this group kind and the name Little Snitch shows for it, so it can be added.' },
+          );
+        }
+        const summary = `switch rule group "${shown(target.name, 80)}" ${enabled ? 'on' : 'off'}`;
+        ctx.models.clear();
+        const result = await ctx.cli.setRuleGroupEnabled(target.name, enabled);
+        const after = parseModelText(result.modelText);
+        ctx.models.put(after);
+        const now = summarizeGroups(after).find((entry) => entry.id === target.id);
+        if (now === undefined || now.active !== enabled) {
+          await ctx.store.audit({ tool: 'set_rule_group_enabled', summary, outcome: 'failed', method: result.method });
+          throw new LittleSnitchError('verification-failed', `Little Snitch accepted the request, but the group "${target.name}" does not read as ${enabled ? 'on' : 'off'}.`);
+        }
+        await ctx.store.audit({ tool: 'set_rule_group_enabled', summary, outcome: 'applied', method: result.method });
+        return { applied: true, group: { id: target.id, name: target.name }, enabled, confirmedByReadBack: true, approvedThrough: result.method };
+      }),
+    ),
   );
 }
 
@@ -109,9 +116,8 @@ function registerRuleTools(server: McpServer, ctx: Context): void {
       title: 'Add a firewall rule',
       description:
         'Add one Little Snitch rule that allows or denies connections of a process to a remote. Give exactly one of remote_domains, remote_hosts, remote_addresses or remote. ' +
-        'The rule applies in all profiles and is marked in its notes as added through MCP. A rule for any process and any remote is refused. ' +
-        'An allow rule opens the firewall: state the exact rule to the person before calling, or call with dry_run first. ' +
-        `A backup is saved first, and the change is checked afterwards and undone if it did not apply cleanly. ${APPROVAL}`,
+        'The rule applies in all profiles and is marked in its notes as added through MCP. A rule for any process and any remote is refused, and so is a remote list too long to show in the approval prompt. ' +
+        `An allow rule opens the firewall: state the exact rule to the person before calling, or call with dry_run first. A backup is saved first. ${APPROVAL}`,
       inputSchema: {
         action: z.enum(['allow', 'deny']),
         process: z.string().min(1).max(1024).describe('Absolute path of the executable (inside the app: /Applications/Safari.app/Contents/MacOS/Safari), or "any" for every process.'),
@@ -124,7 +130,7 @@ function registerRuleTools(server: McpServer, ctx: Context): void {
         ports: z.string().max(11).optional().describe('"any" (default), one port such as "443", or a range such as "8000-8100".'),
         protocol: z.enum(['tcp', 'udp', 'icmp']).optional().describe('Default: any protocol.'),
         priority: z.enum(['regular', 'high']).optional().describe('Default "regular". A high-priority rule wins over regular ones.'),
-        notes: z.string().max(400).optional().describe('Why the rule exists, for the person reading it later.'),
+        notes: z.string().max(400).optional().describe('Why the rule exists, for the person reading it later. One line.'),
         dry_run: DRY_RUN,
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false, title: 'Add a firewall rule' },
@@ -145,7 +151,10 @@ function registerRuleTools(server: McpServer, ctx: Context): void {
         ...(args.priority === undefined ? {} : { priority: args.priority }),
         notes: args.notes === undefined || args.notes.trim() === '' ? stamp : `${args.notes.trim()} ${stamp}`,
       };
+      // Both checks need nothing from Little Snitch, so a bad request never causes an approval prompt.
       validateNewRule(spec);
+      assertFitsPrompt(buildRule(spec, { uid: ctx.uid, now: ctx.now(), model: {} }));
+
       let built: JsonObject | undefined;
       const outcome = await applyModelChange(
         ctx,
@@ -161,10 +170,12 @@ function registerRuleTools(server: McpServer, ctx: Context): void {
           built = rule;
           return {
             tool: 'add_rule',
-            summary: `add rule: ${spec.action} ${spec.process} to ${describeRemote(remoteOf(rule))}`,
+            summary: `add rule: ${ruleText(rule)}`,
+            prompt: prompts.add(rule),
             next: addRule(before, rule),
-            expectation: { removedRefs: [], added: [rule] },
-            preview: { wouldAdd: summarize(rule, before) },
+            written: [rule],
+            removedRefs: [],
+            preview: { wouldAdd: summarize(rule, before), approvalPrompt: prompts.add(rule) },
           };
         },
         args.dry_run === true,
@@ -172,13 +183,7 @@ function registerRuleTools(server: McpServer, ctx: Context): void {
       if (!outcome.applied) {
         return outcome;
       }
-      return {
-        applied: true,
-        rule: built === undefined ? null : readBack(outcome.after, built),
-        backup: outcome.backup,
-        approvedThrough: outcome.method,
-        ...(outcome.notes.length === 0 ? {} : { notes: outcome.notes }),
-      };
+      return { applied: true, rule: built === undefined ? null : readBack(outcome.after, built), backup: outcome.backup, approvedThrough: outcome.method };
     }),
   );
 
@@ -188,13 +193,12 @@ function registerRuleTools(server: McpServer, ctx: Context): void {
       title: 'Change a firewall rule',
       description:
         'Change the action, priority or notes of one rule, found by the ref list_rules shows. Protected and factory rules are refused. ' +
-        'Changing deny to allow opens the firewall: state the change to the person before calling, or call with dry_run first. ' +
-        `A backup is saved first, and the change is checked afterwards and undone if it did not apply cleanly. ${APPROVAL}`,
+        `Changing deny to allow opens the firewall: state the change to the person before calling, or call with dry_run first. A backup is saved first. ${APPROVAL}`,
       inputSchema: {
         ref: REF,
         action: z.enum(['allow', 'deny']).optional(),
         priority: z.enum(['regular', 'high']).optional(),
-        notes: z.string().max(500).optional().describe('New notes. An empty text removes the notes.'),
+        notes: z.string().max(500).optional().describe('New notes, one line. An empty text removes the notes.'),
         dry_run: DRY_RUN,
       },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false, title: 'Change a firewall rule' },
@@ -208,19 +212,27 @@ function registerRuleTools(server: McpServer, ctx: Context): void {
       if (Object.keys(patch).length === 0) {
         throw new LittleSnitchError('invalid-input', 'Give at least one of action, priority or notes.');
       }
-      let wanted: JsonObject | undefined;
+      let written: JsonObject | undefined;
       const outcome = await applyModelChange(
         ctx,
         (before) => {
           const updated = updateRule(before, args.ref, patch, ctx.now());
-          wanted = updated.after;
-          const changed = Object.keys(patch).join(', ');
+          written = updated.after;
+          const was = (key: string, fallback: string): string => asString(updated.before[key]) ?? fallback;
+          const now = (key: string, fallback: string): string => asString(updated.after[key]) ?? fallback;
+          const changes = [
+            ...(was('action', '') === now('action', '') ? [] : [`action ${was('action', 'none').toUpperCase()} becomes ${now('action', 'none').toUpperCase()}`]),
+            ...(was('priority', 'regular') === now('priority', 'regular') ? [] : [`priority ${was('priority', 'regular')} becomes ${now('priority', 'regular')}`]),
+            ...(was('notes', '') === now('notes', '') ? [] : ['notes change']),
+          ];
           return {
             tool: 'update_rule',
-            summary: `change ${changed} of the rule for ${String(updated.before['process'] ?? 'unknown process')} to ${describeRemote(remoteOf(updated.before))}`,
+            summary: `change rule (${changes.join('; ')}): ${ruleText(updated.before)}`,
+            prompt: prompts.update(updated.before, changes),
             next: updated.model,
-            expectation: { removedRefs: [args.ref], added: [updated.after] },
-            preview: { before: summarize(updated.before, before), after: summarize(updated.after, before) },
+            written: [updated.after],
+            removedRefs: [args.ref],
+            preview: { before: summarize(updated.before, before), after: summarize(updated.after, before), approvalPrompt: prompts.update(updated.before, changes) },
           };
         },
         args.dry_run === true,
@@ -228,21 +240,7 @@ function registerRuleTools(server: McpServer, ctx: Context): void {
       if (!outcome.applied) {
         return outcome;
       }
-      const rule = wanted === undefined ? null : readBack(outcome.after, wanted);
-      const differs =
-        rule !== null &&
-        ((patch.action !== undefined && rule.action !== patch.action) ||
-          (patch.priority !== undefined && rule.priority !== patch.priority) ||
-          (patch.notes !== undefined && (rule.notes ?? '') !== patch.notes));
-      return {
-        applied: true,
-        rule,
-        backup: outcome.backup,
-        approvedThrough: outcome.method,
-        ...(differs || outcome.notes.length > 0
-          ? { notes: [...(differs ? ['The rule as read back differs from what was asked; check the "rule" field.'] : []), ...outcome.notes] }
-          : {}),
-      };
+      return { applied: true, rule: written === undefined ? null : readBack(outcome.after, written), backup: outcome.backup, approvedThrough: outcome.method };
     }),
   );
 
@@ -252,8 +250,7 @@ function registerRuleTools(server: McpServer, ctx: Context): void {
       title: 'Remove a firewall rule',
       description:
         'Remove one rule, found by the ref list_rules shows. Protected and factory rules are refused. Removing a deny rule opens the firewall, and removing an allow rule ' +
-        'can break an app: state the rule to the person before calling, or call with dry_run first. ' +
-        `A backup is saved first, so restore_backup can bring the rule back. ${APPROVAL}`,
+        `can break an app: state the rule to the person before calling, or call with dry_run first. A backup is saved first, so restore_backup can bring the rule back. ${APPROVAL}`,
       inputSchema: { ref: REF, dry_run: DRY_RUN },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false, title: 'Remove a firewall rule' },
     },
@@ -266,10 +263,12 @@ function registerRuleTools(server: McpServer, ctx: Context): void {
           removedSummary = summarize(removed, before);
           return {
             tool: 'remove_rule',
-            summary: `remove the ${String(removed['action'] ?? '')} rule for ${String(removed['process'] ?? 'unknown process')} to ${describeRemote(remoteOf(removed))}`,
+            summary: `remove rule: ${ruleText(removed)}`,
+            prompt: prompts.remove(removed),
             next,
-            expectation: { removedRefs: [args.ref], added: [] },
-            preview: { wouldRemove: removedSummary },
+            written: [],
+            removedRefs: [args.ref],
+            preview: { wouldRemove: removedSummary, approvalPrompt: prompts.remove(removed) },
           };
         },
         args.dry_run === true,
@@ -277,13 +276,7 @@ function registerRuleTools(server: McpServer, ctx: Context): void {
       if (!outcome.applied) {
         return outcome;
       }
-      return {
-        applied: true,
-        removed: removedSummary ?? null,
-        backup: outcome.backup,
-        approvedThrough: outcome.method,
-        ...(outcome.notes.length === 0 ? {} : { notes: outcome.notes }),
-      };
+      return { applied: true, removed: removedSummary ?? null, backup: outcome.backup, approvedThrough: outcome.method };
     }),
   );
 }
@@ -295,7 +288,7 @@ function registerRestoreTool(server: McpServer, ctx: Context): void {
       title: 'Restore a backup',
       description:
         'Replace the whole Little Snitch configuration (every rule, group, profile and setting) with a backup this server saved, named as list_backups shows it. ' +
-        'Everything changed since that backup is lost, so call with dry_run first and tell the person what would be removed and added. ' +
+        'Everything changed since that backup is lost, so call with dry_run first and tell the person what would go and what would come back. ' +
         `The current configuration is backed up first. ${APPROVAL}`,
       inputSchema: {
         name: z.string().max(120).describe('The backup\'s file name, as list_backups shows it.'),
@@ -306,46 +299,40 @@ function registerRestoreTool(server: McpServer, ctx: Context): void {
     safely(async (args) => {
       const { info, text } = await ctx.store.readBackup(args.name);
       const target = parseModelText(text);
-      const { model: current, text: currentText } = await ctx.models.fresh();
-      const difference = verifyChange(current, target, { removedRefs: [], added: [] });
-      const effect = {
-        rulesRemoved: difference.missing.length,
-        rulesAdded: difference.unexpected.length,
-        examplesRemoved: difference.missing.slice(0, 10),
-        examplesAdded: difference.unexpected.slice(0, 10),
-        otherChanges: difference.otherChanges,
+      /** What restoring would do to the configuration as it is now. */
+      const effectOn = (current: JsonObject) => {
+        const difference = compareModels(target, current);
+        return {
+          rulesRemoved: difference.unexpected.length,
+          rulesAdded: difference.missing.length,
+          examplesRemoved: difference.unexpected.slice(0, 10),
+          examplesAdded: difference.missing.slice(0, 10),
+          otherPartsChanged: difference.changedSections,
+          otherChanges: difference.otherChanges,
+        };
       };
       if (args.dry_run === true) {
-        return { applied: false, dryRun: true, backup: info.name, effect };
+        const { model } = await ctx.models.fresh();
+        return { applied: false, dryRun: true, backup: info.name, effect: effectOn(model) };
       }
-      const safety = await ctx.store.writeBackup(currentText, 'before-restore_backup');
-      const summary = `restore the backup ${info.name}`;
-      ctx.models.clear();
-      const result = await ctx.cli.restoreModel(info.path, `Little Snitch MCP wants to replace your whole Little Snitch configuration with the backup ${info.name}.`);
-      const after = parseModelText(result.modelText);
-      const check = verifyChange(target, after, { removedRefs: [], added: [] });
-      if (check.missing.length > 0) {
-        await ctx.store.audit({ tool: 'restore_backup', summary, outcome: 'failed', method: result.method, backup: safety.name });
-        throw new LittleSnitchError(
-          'verification-failed',
-          `The backup was restored, but ${check.missing.length} of its rules are not in the configuration afterwards. The configuration from before the restore is saved as ${safety.name}.`,
-          { details: { missing: check.missing.slice(0, 20), savedBefore: safety.name } },
-        );
-      }
-      ctx.models.put(after);
-      await ctx.store.audit({ tool: 'restore_backup', summary, outcome: 'applied', method: result.method, backup: safety.name });
-      return {
-        applied: true,
-        restored: info.name,
-        rulesNow: rulesOf(after).length,
-        effect,
-        savedBefore: safety.name,
-        approvedThrough: result.method,
-        // The backup was read before the restore. A rule that is there now and not in what was read deserves a look.
-        ...(check.unexpected.length === 0
-          ? {}
-          : { notes: [`${check.unexpected.length} rule(s) are in the configuration that the backup did not contain.`], notInBackup: check.unexpected.slice(0, 20) }),
-      };
+      return ctx.changes.run(async () => {
+        const { model: current, text: currentText } = await ctx.models.fresh();
+        const effect = effectOn(current);
+        const safety = await ctx.store.writeBackup(currentText, 'before-restore_backup');
+        const { after, method } = await restoreVerified(ctx, {
+          tool: 'restore_backup',
+          summary: `restore the backup ${info.name}`,
+          prompt: prompts.restore(info.name, effect.rulesRemoved, effect.rulesAdded, effect.otherPartsChanged.length),
+          before: current,
+          beforeText: currentText,
+          backup: safety,
+          file: info.path,
+          // The checksum of what was read and shown here. Root restores this content or nothing.
+          fileSha256: sha256(text),
+          expected: target,
+        });
+        return { applied: true, restored: info.name, rulesNow: rulesOf(after).length, effect, savedBefore: safety.name, approvedThrough: method };
+      });
     }),
   );
 }

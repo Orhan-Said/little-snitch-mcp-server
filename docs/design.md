@@ -30,7 +30,7 @@ Objective Development does not document the JSON format. The torsday/little-snit
 2. Install a privileged helper. It would need a signed, notarized binary and an installer. Too much for a project whose users should be able to read all of its code.
 3. Use what macOS already has: Touch ID for sudo, and the administrator dialog of `do shell script`. Both prompts come from macOS, and the server never sees a password.
 
-The server uses the third. It tries `sudo` without a prompt first, then Touch ID, then the dialog. A change never takes the first step, so it always gets a fresh approval unless the owner switched that off.
+The server uses the third. For a read it tries `sudo` without a prompt first, then Touch ID, then the dialog. A change goes through the dialog only, because `sudo` cannot promise a prompt: a `NOPASSWD` rule makes it silent, and the server cannot see such a rule.
 
 ### How to change a rule
 
@@ -38,7 +38,7 @@ The server uses the third. It tries `sudo` without a prompt first, then Touch ID
 2. Script the Little Snitch window. Brittle, and it needs Accessibility permission for the assistant's host.
 3. Export, edit and restore the configuration. This is the documented route. Its risk is that a restore replaces everything.
 
-The server uses the third and surrounds it with checks: a backup before, a read-back after, a comparison of every rule, and an automatic restore of the backup when the comparison fails.
+The server uses the third and surrounds it with checks: a backup before, a read-back after, a comparison of the whole configuration, and an automatic restore of the backup when the comparison fails.
 
 ### How to hold the configuration in memory
 
@@ -53,7 +53,7 @@ The format is undocumented and changes between versions. Typed structures with e
 
 Rules carry no id in the configuration. The server derives a reference from a hash of the rule's content, leaving out the two fields Little Snitch updates on its own (`lastUsed`, `useCount`). A reference therefore stops matching when the rule changes, which protects against editing a rule that is no longer what the assistant saw.
 
-After a change, the server matches the new rule by meaning, not by exact text: action, process, helper, remote, direction, ports, protocol and priority, with defaults filled in. Little Snitch may respell a rule it accepts, for example turn `tcp` into `6`, and that must not count as a failure.
+After a change, every rule that was not touched must come back with the same reference. The rule that was written must come back with every field as sent, known to this server or not. Only its dates and a short list of spellings may differ: a default left out or written out, a protocol as a name or a number, one remote as text or as a list.
 
 ### What the assistant may do by default
 
@@ -66,6 +66,25 @@ Nothing but read. The owner names the kinds of change at startup. A tool that is
 - Packet capture (`capture-traffic`) and live streams. They run until stopped and return payload data.
 - Subscribing to blocklists and answering connection alerts. The command-line tool cannot do either.
 
+## What an outside review changed
+
+Before the first release, three models from other vendors reviewed the repository independently (2026-11-22). Two ruled "fix first" and one "reject". All three confirmed that tools exist only when allowed and that root commands are built without injection. Their findings, all reproduced against the simulator, led to these changes:
+
+| Finding | Change |
+|---|---|
+| The check after a change accepted extra rules, ignored some fields of the new rule, and did not look at preferences | The whole configuration is compared. Any difference fails the change and it is undone. |
+| A failed read-back or a timeout after the write did not lead to an undo | The server reads again and undoes what differs. |
+| With a `NOPASSWD` rule, `sudo -k` ran a change without a prompt while the docs promised one | Changes go through the administrator dialog only. The status tool names the settings that remove approval. |
+| The prompt was cut at 240 characters and could hide the remote | The prompt is built from fields, action and remote first. A remote list that does not fit is refused. |
+| A failed `restore_backup` left a partial restore active | It restores the configuration from before and checks it. |
+| Two changes at once could lose one | One change at a time, with a lock file across processes. |
+| "Rolled back" was reported without a full comparison | The undo is compared with the configuration from before, in full. |
+| Group names matched without regard to letter case | Exact match only. |
+
+One finding went further than the reviewers asked: the file to restore is now copied into a folder only root can enter and checked against a checksum before Little Snitch reads it.
+
+The second round of that review, in which the reviewers examine each other's findings, did not complete.
+
 ## Open questions
 
 These need a run on a real install with terminal access on. `npm run live-check` prints the answers without any personal data.
@@ -73,6 +92,7 @@ These need a run on a real install with terminal access on. `npm run live-check`
 - Which key holds the active profile.
 - What `restrictions` prints when terminal access is on.
 - The exact CSV that `log-traffic` prints on 6.5.
-- Whether a restore changes anything outside the rule list, such as preferences. The check after a change compares rules, rule group states and the set of profiles, and nothing else.
+- Whether a restore changes anything outside the rule list on its own, such as preferences or caches. The check after a change is strict, so every such part must either stay the same or be on the short list of parts Little Snitch keeps for itself (`LITTLE_SNITCH_OWNED_SECTIONS` in `src/model/verify.ts`). If that list is too short for 6.5, every rule change is undone and the error names the part.
+- Whether Little Snitch respells a rule in a way `tolerantKey` in `src/model/rules.ts` does not expect.
 - Whether `log-traffic` reads its dates as local time, which the server assumes.
 - Whether the rule shape from 6.3.3 is still accepted by `restore-model` on 6.5. `npm run live-check -- --write` tests it with one harmless rule.

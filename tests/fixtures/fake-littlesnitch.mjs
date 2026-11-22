@@ -53,6 +53,11 @@ const BUILTIN_NAMES = { builtinMacOSServices: 'macOS Services', builtinICloudSer
 
 switch (command) {
   case 'export-model': {
+    if ((settings.exportFailures ?? 0) > 0) {
+      settings.exportFailures -= 1;
+      saveSettings();
+      fail(1, 'Error: could not export the model.');
+    }
     process.stdout.write(readFileSync(file('model.json'), 'utf8'));
     break;
   }
@@ -62,6 +67,9 @@ switch (command) {
       settings.terminalAccess = false;
     }
     const behavior = settings.restoreBehaviors.shift() ?? 'accept';
+    // The read-backs that follow this restore can be made to fail a number of times.
+    settings.exportFailures = settings.failExportsAfterRestore ?? 0;
+    settings.failExportsAfterRestore = 0;
     saveSettings();
     if (behavior === 'reject') {
       fail(1, 'Error: the backup file is not valid.');
@@ -78,10 +86,31 @@ switch (command) {
       const last = incoming.rules.at(-1);
       incoming.rules = [...incoming.rules.slice(0, -1), { ...last, action: last.action === 'allow' ? 'deny' : 'allow' }];
     }
+    const isNew = (index) => index >= current.rules.length;
     if (behavior === 'respell') {
+      // Spellings a real Little Snitch may choose for the same rule: a default written out, a protocol as a number, one remote as a list.
       incoming.rules = incoming.rules.map((rule, index) =>
-        index < current.rules.length ? rule : { ...rule, direction: 'outgoing', approved: true, ...(rule.protocol === 'tcp' ? { protocol: '6' } : {}) },
+        !isNew(index)
+          ? rule
+          : {
+              ...rule,
+              direction: 'outgoing',
+              ...(rule.protocol === 'tcp' ? { protocol: '6' } : {}),
+              ...(typeof rule['remote-domains'] === 'string' ? { 'remote-domains': [rule['remote-domains']] } : {}),
+            },
       );
+    }
+    if (behavior === 'add-unknown-field') {
+      incoming.rules = incoming.rules.map((rule, index) => (isNew(index) ? { ...rule, disabled: true } : rule));
+    }
+    if (behavior === 'change-uid') {
+      incoming.rules = incoming.rules.map((rule, index) => (isNew(index) ? { ...rule, uid: 0 } : rule));
+    }
+    if (behavior === 'flip-preference') {
+      incoming.globalDefaults = { ...incoming.globalDefaults, allowCommandLineAccess: false };
+    }
+    if (behavior === 'switch-group') {
+      incoming.groups.aaaaac = { ...incoming.groups.aaaaac, isActive: true };
     }
     if (behavior === 'add-stray-rule') {
       incoming.rules = [...incoming.rules, { action: 'allow', process: 'any', 'remote-domains': 'stray.example' }];

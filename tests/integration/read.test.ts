@@ -73,8 +73,9 @@ describe('get_status', () => {
       changesAllowed: ['switches'],
       dataFolder: dataDir,
       backups: 0,
-      toDo: [],
+      toDo: ['Elevation "none" is meant for tests: the assistant can make the allowed changes without anyone approving them.'],
     });
+    expect(data.rootAccess.approvalForChanges).toBe('NONE: with elevation "none" the tool is run directly and nobody is asked');
     expect(calls()).toEqual([['--version'], ['restrictions']]);
   });
 
