@@ -133,7 +133,9 @@ describe('add_rule when the configuration afterwards is not the intended one', (
     expect(data.error.message).toContain('The earlier configuration was put back and checked');
     expect(data.error.details).toMatchObject({ rolledBack: true, configurationAsBefore: true });
     expect(commands(h)).toEqual(['export-model', 'restore-model', 'export-model', 'restore-model', 'export-model']);
-    expect(h.calls()[3]?.[2]).toBe(path.join(h.dataDir, 'backups', data.error.details.backup));
+    // The undo restores a fresh copy of what was read before the change, not the backup file on disk.
+    expect(h.calls()[3]?.[2]).toContain(path.join(h.dataDir, 'pending'));
+    expect(readdirSync(path.join(h.dataDir, 'pending'))).toEqual([]);
     expect(refs(h)).toEqual(ORIGINAL_REFS);
     expect(auditLog(h)).toMatchObject([{ outcome: 'rolled-back' }]);
     return { h, error: data.error };
@@ -215,6 +217,7 @@ describe('add_rule when things fail after the change was made', () => {
     const { data } = await h.call('add_rule', NEW_RULE);
     expect(data.error.message).toContain('could NOT be undone automatically');
     expect(data.error.message).toContain(path.join(h.dataDir, 'backups', data.error.details.backup));
+    expect(data.error.message).toMatch(/shasum -a 256 ".*" must print [0-9a-f]{64}\./);
     expect(data.error.details).toMatchObject({ rolledBack: false, configurationAsBefore: false });
     expect(auditLog(h)).toMatchObject([{ outcome: 'not-rolled-back' }]);
   });

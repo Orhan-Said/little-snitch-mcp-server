@@ -97,7 +97,8 @@ describe('applyModelChange when the change step times out', () => {
     expect(error.kind).toBe('verification-failed');
     expect(error.message).toContain('The earlier configuration was put back and checked');
     expect(error.details).toMatchObject({ rolledBack: true, configurationAsBefore: true, cause: 'timeout' });
-    expect(restoredFiles).toEqual(['/data/pending/change.json', BACKUP.path]);
+    // Both the change and the undo are restored from files written afresh, never from the backup on disk.
+    expect(restoredFiles).toEqual(['/data/pending/change.json', '/data/pending/change.json']);
     expect(audits).toMatchObject([{ outcome: 'rolled-back' }]);
   });
 
@@ -109,6 +110,7 @@ describe('applyModelChange when the change step times out', () => {
     const error = (await applyModelChange(ctx, plan, false).catch((caught: unknown) => caught)) as LittleSnitchError;
     expect(error.message).toContain('the configuration could not be read afterwards');
     expect(error.message).toContain('sudo "/fake/littlesnitch" restore-model --preserve-terminal-access "/data/backups/backup.json"');
+    expect(error.message).toMatch(/shasum -a 256 "\/data\/backups\/backup\.json" must print [0-9a-f]{64}\./);
     expect(error.details).toMatchObject({ rolledBack: false, configurationAsBefore: false });
     expect(audits).toMatchObject([{ outcome: 'not-rolled-back' }]);
   });

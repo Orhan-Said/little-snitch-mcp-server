@@ -58,8 +58,10 @@ const NOTHING_RAN: readonly ErrorKind[] = [
   'tampered',
 ];
 
-const manualRestore = (ctx: Context, backup: BackupInfo): string =>
-  `To put the earlier configuration back yourself, run: sudo "${ctx.config.cliPath}" restore-model --preserve-terminal-access "${backup.path}"`;
+/** How to restore by hand. The checksum lets the person see that the backup file is still the one this server wrote. */
+const manualRestore = (ctx: Context, request: RestoreRequest): string =>
+  `To put the earlier configuration back yourself, first check the backup: shasum -a 256 "${request.backup.path}" must print ${sha256(request.beforeText)}. ` +
+  `Then run: sudo "${ctx.config.cliPath}" restore-model --preserve-terminal-access "${request.backup.path}"`;
 
 interface Recovery {
   /** True when the configuration was read and equals the one from before the change. */
@@ -73,13 +75,21 @@ interface Recovery {
 async function undo(ctx: Context, request: RestoreRequest): Promise<Recovery> {
   const fail = async (sentence: string, details: Record<string, unknown>): Promise<Recovery> => {
     await ctx.store.audit({ tool: request.tool, summary: request.summary, outcome: 'not-rolled-back', backup: request.backup.name });
-    return { asBefore: false, rolledBack: false, sentence: `${sentence} ${manualRestore(ctx, request.backup)}`, details };
+    return { asBefore: false, rolledBack: false, sentence: `${sentence} ${manualRestore(ctx, request)}`, details };
   };
+  // The undo restores what this server read before the change, written out afresh from memory.
+  // It does not depend on the backup file still being what it was.
   let undoneText: string;
+  let file: string | undefined;
   try {
-    undoneText = (await ctx.cli.restoreModel(request.backup.path, sha256(request.beforeText), prompts.undo)).modelText;
+    file = await ctx.store.writePending(request.beforeText);
+    undoneText = (await ctx.cli.restoreModel(file, sha256(request.beforeText), prompts.undo)).modelText;
   } catch (error) {
     return fail(`It could NOT be undone automatically (${error instanceof Error ? error.message : String(error)}).`, {});
+  } finally {
+    if (file !== undefined) {
+      await ctx.store.removePending(file);
+    }
   }
   let check;
   try {

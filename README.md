@@ -149,7 +149,7 @@ Little Snitch has no command to edit one rule. Its documented route for automati
 3. It asks macOS for the administrator dialog. As root, a small script copies the file into a folder only root can enter, compares the copy with the checksum, and has Little Snitch restore the copy. Another program of yours cannot swap the file after you approved.
 4. Under the same approval, it reads the configuration back.
 5. It compares the whole configuration with the one it intended. A rule nobody asked for, a field of the new rule that came back different, and any change to preferences, rule groups or profiles count as a difference.
-6. If there is a difference, it restores the backup, compares again, and reports the failure. If the restore or the comparison fails too, the error gives you the command to restore the backup by hand.
+6. If there is a difference, it restores the configuration it read in step 1, compares again, and reports the failure. If that fails too, the error gives you the command to restore the backup by hand, with the checksum the backup file must have.
 
 The comparison ignores two things. One is what Little Snitch updates as traffic flows: a rule's last use and use count. The other is what Little Snitch keeps for itself: its statistics, its list of programs it has seen, and its version markers. For the rule just written, its dates and a few spellings may also differ, for example `tcp` and `6`.
 

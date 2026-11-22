@@ -24,7 +24,7 @@ The assistant makes a mistake. It may misspell a name or pick the wrong rule.
 Little Snitch does not take a change as written. It may drop a field or a rule.
 
 - The server saves a backup before each rule change, reads the configuration back afterwards and compares all of it with what it intended. An extra rule, a different field or a changed preference is a difference.
-- On any difference the server restores the backup and compares again. If that fails, the error contains the command to restore the backup by hand.
+- On any difference the server restores the configuration from before, which it still holds in memory, and compares again. If that fails, the error contains the command to restore the backup file by hand, with the checksum the file must have.
 - If a step fails after the change may have run, for example a timeout, the server reads the configuration again and undoes what differs.
 
 Another program swaps the file. The changed configuration lies in a folder your own programs can write to.
