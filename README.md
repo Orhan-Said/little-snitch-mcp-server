@@ -26,6 +26,7 @@ Read this before you rely on the server. Little Snitch's tool needs root and a s
 | Reading Little Snitch's own log (`get_log`) | On Little Snitch 6.5 |
 | Error messages when root access is not set up | On Little Snitch 6.5 |
 | The shell text for the administrator dialog, with its checked private copy | With `/bin/sh` and `osascript`, without the administrator step |
+| The lock that keeps two changes apart | With macOS `lockf`: twelve takers at once, and a holder that is killed |
 | Rules, groups, profiles, traffic, preferences, backups | Against the simulator in `tests/fixtures/fake-littlesnitch.mjs` |
 | Adding, changing and removing rules, with the check afterwards and the undo | Against the simulator |
 | The administrator dialog with a real password, and Touch ID for sudo | Not run |
