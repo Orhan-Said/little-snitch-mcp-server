@@ -101,7 +101,26 @@ The same three models then reviewed the fixed code, this time in both rounds. Al
 | The rule match ignored remote-list entries that are not text | A list with such an entry must match exactly. |
 | `create_backup` could prune a restore target | A restore no longer depends on the backup file once it has been read. |
 
-At this point the reviewers' remaining objections are premises nobody can check without a real Little Snitch: whether the root script works under a real administrator dialog, whether the list of ignored sections and the rule match fit version 6.5, whether macOS shows a long prompt whole, and what a killed dialog leaves running. A third review cannot settle those. A run of `npm run live-check -- --write` can.
+At that point the reviewers' remaining objections were premises nobody could check without a real Little Snitch: whether the root script works under a real administrator dialog, whether the list of ignored sections and the rule match fit version 6.5, whether macOS shows a long prompt whole, and what a killed dialog leaves running. The runs on a real Little Snitch described below settled the first two.
+
+After those runs the same three models reviewed everything that had changed since the first review (2026-11-23). One ruled "reject" and two "fix first". All three confirmed that the thirteen fixes above are in place. The second round did not complete, because one reviewer ran out of time; the two who finished it confirmed each other's findings. What they found, and what changed:
+
+| Finding | Change |
+|---|---|
+| After a timeout the lock was given back while the root command could still be running, so a later change could be reported as applied and then be overwritten | The server keeps the lock and refuses every change until a minute has passed and the list of running programs shows no `littlesnitch` command that changes the configuration. It looks at that list before every change, so a command left behind by a server that has gone is seen too. An undo that times out is treated the same way. |
+| The lock was per home folder, so two macOS users, or one user with two home folders, could overwrite each other | One lock file for the whole Mac, at a fixed place that no setting moves. |
+| A profile switch accepted changes to groups and preferences and reported them as applied | Only the key that names the active profile may differ. Anything else is undone. |
+| The prompt for an existing rule could leave out a list entry that is not text or a second remote field, and could cut a long keyword | A rule the prompt cannot show exactly is not changed or removed through the server. The same check covers direction, priority, ports, protocol and paths. |
+| If the helper process that holds the lock died, the change went on without the lock | The server checks that the lock is still held right before each privileged command, and before an undo. |
+| The check of Little Snitch's own switches refused only on an exact `false` | It reads yes and no in every common form, refuses on a value it does not understand, and reports a missing key in the result and in `get_status`. The documents call it a courtesy, which is what it is. |
+| The documents said the whole configuration is compared, while seven sections are left out | The documents name the sections and the preference keys. A section that differs is named in the result. The preference keys are matched by their exact spelling. |
+| An unconfirmed profile switch was logged as "applied" | It is logged as "accepted". |
+| Taking the lock had no time limit | Fifteen seconds. |
+| `update_rule` could make a rule a copy of another, or turn a deny rule for any process and any remote into allow | Both are refused. |
+| A temporary file that could not be removed was left without a word | The result carries a warning, and the folder is cleared under the lock before the next change. |
+| A test depended on the test before it, and the documents miscounted the commands of the real-system check | Both corrected. |
+
+Two things the reviewers asked for were not done. They suggested that the privileged command itself hold the lock until it ends. That would need a root helper installed on the Mac, which this project avoids. And they suggested comparing the seven left-out sections field by field. What Little Snitch writes there was not recorded, so the server reports a difference there by name and does not judge it.
 
 ## What a real configuration showed
 
@@ -109,7 +128,7 @@ On 2026-11-23 the owner of a Mac with Little Snitch 6.5 ran `npm run live-check`
 
 What it confirmed:
 
-- The administrator dialog works with a real password, and three commands run under one approval with their outputs taken apart correctly. The configuration alone was about 530 KB.
+- The administrator dialog works with a real password, and three commands run under one approval with their outputs taken apart correctly. (The check has since gained a fourth read, the export on behalf of the user, and ran with four.) The configuration alone was about 530 KB.
 - `restrictions` without root tells whether terminal access is on.
 - The top-level sections are the ones the earlier project recorded, plus `knownNEs`.
 - Rule dates are ISO text. `lastUsed` is a number of seconds counted from 2001.
@@ -155,7 +174,7 @@ Because of those three, the check reported a difference although the rules were 
 
 After those fixes the owner ran `npm run live-check -- --write`. It passed: the test rule was added, the whole configuration compared equal to the intended one, the rule was removed, and the configuration compared equal again. Each change went through the administrator dialog and was read back under the same approval.
 
-Before writing, the run exported the configuration twice under one approval, once with `-u <uid>` and once without. The two were the same: the same rules, the same users, no part different. So the option does not change what an export returns.
+Before writing, the run exported the configuration twice under one approval, once with `-u <uid>` and once without. The server's comparison found them the same: the same rules, the same users, the same groups, profiles and preferences. That comparison leaves out the seven sections Little Snitch keeps for itself, so the run did not show whether those were identical too. The check now compares the two exports part by part as well and prints what differs.
 
 One thing the run could not show. The record for the root user from the first attempt was still in the configuration, so the run does not tell whether `-u` keeps a restore from adding it.
 
@@ -167,4 +186,8 @@ One thing the run could not show. The record for the root user from the first at
 - How `update_rule`, `restore_backup` and the two switch tools behave on a real Little Snitch. Only `add_rule` and `remove_rule` have run there.
 - Which key holds the active profile, and what profiles look like.
 - Whether macOS shows a prompt of about 1,000 characters whole in the administrator dialog.
-- Whether a command started by the administrator dialog keeps running when `osascript` is killed. Without administrator rights it does.
+- Whether a command started by the administrator dialog keeps running when `osascript` is killed. Without administrator rights it does. The server now assumes that it does.
+- Whether such a command always shows in the list of running programs with the tool's path and its command, as it does for the processes this was tried with.
+- What `knownNEs` and `developerTeamNames` hold, and whether `knownNEs` affects filtering.
+- How Little Snitch writes the two Security switches when they are off, and whether every version writes them at all. The server reads the common forms of yes and no.
+- Whether two macOS users can share the lock file in practice. The file is readable by all, and `lockf` locks a file it can only read, but only one user was tried.
