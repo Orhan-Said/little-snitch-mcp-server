@@ -9,7 +9,11 @@ import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { parse, stringify } from 'lossless-json';
 
-const [stateDir, ...args] = process.argv.slice(2);
+const [stateDir, ...rawArgs] = process.argv.slice(2);
+// "-u <user>" before the command names the user the tool acts for. Without it, a tool run as root acts for root.
+const hasUser = rawArgs[0] === '-u' || rawArgs[0] === '--user';
+const actingUser = hasUser ? Number(rawArgs[1]) : 0;
+const args = hasUser ? rawArgs.slice(2) : rawArgs;
 const file = (name) => path.join(stateDir, name);
 const settings = JSON.parse(readFileSync(file('settings.json'), 'utf8'));
 const saveSettings = () => writeFileSync(file('settings.json'), JSON.stringify(settings));
@@ -17,6 +21,7 @@ const readModel = () => parse(readFileSync(file('model.json'), 'utf8'));
 const writeModel = (model) => writeFileSync(file('model.json'), stringify(model));
 
 appendFileSync(file('calls.jsonl'), `${JSON.stringify(args)}\n`);
+appendFileSync(file('raw-calls.jsonl'), `${JSON.stringify(rawArgs)}\n`);
 
 const fail = (code, message) => {
   process.stderr.write(`${message}\n`);
@@ -135,6 +140,22 @@ switch (command) {
     }
     if (behavior === 'add-stray-rule') {
       incoming.rules = [...incoming.rules, { action: 'allow', process: 'any', 'remote-domains': 'stray.example' }];
+    }
+    // What a real Little Snitch 6.5 did by itself on every restore (seen on 2026-11-23):
+    settings.restores = (settings.restores ?? 0) + 1;
+    saveSettings();
+    // it rebuilt its table of developer names,
+    incoming.developerTeamNames = { MLZF7K7B5R: `Objective Development, rebuilt ${settings.restores}` };
+    // it rewrote its list of known network extensions,
+    incoming.knownNEs = settings.restores % 2 === 1 ? [...(incoming.knownNEs ?? []), 'com.example.vpn'] : (incoming.knownNEs ?? []);
+    // it wrote the map position back under keys that start with a small letter,
+    incoming.users = incoming.users.map((user) => ({
+      ...user,
+      defaults: Object.fromEntries(Object.entries(user.defaults ?? {}).map(([key, value]) => [key.startsWith('GeoView') ? `g${key.slice(1)}` : key, value])),
+    }));
+    // and it added a record for the user it acted for when there was none: root, unless "-u" named someone.
+    if (!incoming.users.some((user) => Number(user.uid?.value ?? user.uid) === actingUser)) {
+      incoming.users = [...incoming.users, { uid: actingUser, shortName: actingUser === 0 ? 'root' : 'user', fullName: 'Added by restore', defaults: {} }];
     }
     writeModel(incoming);
     break;

@@ -39,7 +39,7 @@ function setup(options: {
     },
   };
   const { exec, calls } = fakeExec(options.responder ?? (() => undefined));
-  const cli = createCli({ exec, elevator, binary, config: { cliPath: CLI, elevation: options.mode ?? 'auto', commandTimeoutMs: 1000 } });
+  const cli = createCli({ exec, elevator, binary, config: { cliPath: CLI, elevation: options.mode ?? 'auto', commandTimeoutMs: 1000 }, uid: 501 });
   return { cli, runs, calls, trustChecks: () => trustChecks };
 }
 
@@ -104,7 +104,7 @@ describe('createCli', () => {
   it('exports the model as a read and checks the binary first', async () => {
     const { cli, runs, trustChecks } = setup({ outputs: [ok('{"rules":[]}')] });
     expect(await cli.exportModel()).toBe('{"rules":[]}');
-    expect(runs[0]?.steps).toEqual([{ args: ['export-model'] }]);
+    expect(runs[0]?.steps).toEqual([{ args: ['-u', '501', 'export-model'] }]);
     expect(trustChecks()).toBe(1);
   });
 
@@ -130,7 +130,7 @@ describe('createCli', () => {
   it('builds the traffic command from validated dates', async () => {
     const { cli, runs } = setup({ outputs: [ok('date,direction\n')] });
     await cli.logTraffic('2026-11-22 10:00:00', '2026-11-22 11:00:00');
-    expect(runs[0]?.steps[0]?.args).toEqual(['log-traffic', '--begin-date', '2026-11-22 10:00:00', '--end-date', '2026-11-22 11:00:00']);
+    expect(runs[0]?.steps[0]?.args).toEqual(['-u', '501', 'log-traffic', '--begin-date', '2026-11-22 10:00:00', '--end-date', '2026-11-22 11:00:00']);
     await expect(cli.logTraffic('yesterday')).rejects.toMatchObject({ kind: 'invalid-input' });
     await expect(cli.logTraffic('2026-11-22 10:00:00', '--stream')).rejects.toMatchObject({ kind: 'invalid-input' });
   });
@@ -141,12 +141,12 @@ describe('createCli', () => {
     await cli.deactivateAllProfiles();
     await cli.setRuleGroupEnabled('macOS Services', false);
     await cli.setRuleGroupEnabled('macOS Services', true);
-    const readBack = { args: ['export-model'] };
+    const readBack = { args: ['-u', '501', 'export-model'] };
     expect(runs.map((run) => run.steps)).toEqual([
-      [{ args: ['profile', '--activate', 'Work'], write: true }, readBack],
-      [{ args: ['profile', '--deactivate-all'], write: true }, readBack],
-      [{ args: ['rulegroup', '--disable', 'macOS Services'], write: true }, readBack],
-      [{ args: ['rulegroup', '--enable', 'macOS Services'], write: true }, readBack],
+      [{ args: ['-u', '501', 'profile', '--activate', 'Work'], write: true }, readBack],
+      [{ args: ['-u', '501', 'profile', '--deactivate-all'], write: true }, readBack],
+      [{ args: ['-u', '501', 'rulegroup', '--disable', 'macOS Services'], write: true }, readBack],
+      [{ args: ['-u', '501', 'rulegroup', '--enable', 'macOS Services'], write: true }, readBack],
     ]);
     expect(runs[0]?.reason).toBe('Little Snitch MCP wants to activate the Little Snitch profile "Work".');
   });
@@ -166,10 +166,12 @@ describe('createCli', () => {
     const { cli, runs } = setup({ outputs: [ok(''), ok('{"rules":[1]}')] });
     const restored = await cli.restoreModel('/data/pending/x.json', 'a'.repeat(64), 'Approve');
     expect(restored).toEqual({ modelText: '{"rules":[1]}', method: 'sudo' });
+    // The checksum is tied to the file argument, wherever the "-u <user>" in front moves it.
     expect(runs[0]?.steps).toEqual([
-      { args: ['restore-model', '--preserve-terminal-access', '/data/pending/x.json'], write: true, input: { index: 2, sha256: 'a'.repeat(64) } },
-      { args: ['export-model'] },
+      { args: ['-u', '501', 'restore-model', '--preserve-terminal-access', '/data/pending/x.json'], write: true, input: { index: 4, sha256: 'a'.repeat(64) } },
+      { args: ['-u', '501', 'export-model'] },
     ]);
+    expect(runs[0]?.steps[0]?.args[runs[0]?.steps[0]?.input?.index ?? -1]).toBe('/data/pending/x.json');
     expect(runs[0]?.reason).toBe('Approve');
   });
 
@@ -196,7 +198,7 @@ describe('createCli', () => {
     await cli.listPreferences('global');
     await cli.listPreferences('user');
     await cli.listPreferences('all');
-    expect(runs.map((run) => run.steps[0]?.args)).toEqual([['list-preferences', '--global-only'], ['list-preferences', '--user-only'], ['list-preferences']]);
+    expect(runs.map((run) => run.steps[0]?.args.slice(2))).toEqual([['list-preferences', '--global-only'], ['list-preferences', '--user-only'], ['list-preferences']]);
   });
 
   it('reads the log without privileges and limits the window', async () => {

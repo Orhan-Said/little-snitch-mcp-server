@@ -100,7 +100,8 @@ export function createContext(config: Config, overrides: ContextOverrides = {}):
   const touchId = overrides.touchId ?? (() => touchIdConfigured());
   const binary = createBinaryChecker(config.cliPath, exec);
   const elevator = createElevator({ exec, config, touchIdConfigured: touchId, randomToken: () => randomBytes(16).toString('hex') });
-  const cli = createCli({ exec, elevator, binary, config });
+  const uid = overrides.uid ?? currentUid(process.env, process.getuid?.() ?? 0);
+  const cli = createCli({ exec, elevator, binary, config, uid });
   const store = createStore(config.dataDir, now);
   return {
     config,
@@ -111,6 +112,6 @@ export function createContext(config: Config, overrides: ContextOverrides = {}):
     models: createModelCache(cli, now),
     touchId,
     now,
-    uid: overrides.uid ?? currentUid(process.env, process.getuid?.() ?? 0),
+    uid,
   };
 }

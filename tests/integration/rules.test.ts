@@ -123,6 +123,27 @@ describe('add_rule', () => {
     expect(auditLog(h)).toMatchObject([{ outcome: 'failed' }]);
   });
 
+  it('runs every privileged command on behalf of the user, so Little Snitch adds no record for root', async () => {
+    const h = await start();
+    await h.call('list_rules');
+    await h.call('add_rule', NEW_RULE);
+    const privileged = h.rawCalls().filter((call) => !['--version', 'restrictions', 'log'].includes(call[0] ?? ''));
+    expect(privileged.length).toBeGreaterThanOrEqual(4);
+    expect(privileged.every((call) => call[0] === '-u' && call[1] === '501')).toBe(true);
+    const users = toPlain(h.model()['users']) as Array<{ uid: number }>;
+    expect(users.map((user) => user.uid)).toEqual([501]);
+  });
+
+  it('is not put off by what Little Snitch rewrites by itself during a restore', async () => {
+    const h = await start();
+    const { data } = await h.call('add_rule', NEW_RULE);
+    expect(data.applied).toBe(true);
+    // The fake did what a real 6.5 did: it rebuilt the developer names, touched the known extensions and renamed the map position keys.
+    expect(h.modelText()).toContain('"developerTeamNames":{"MLZF7K7B5R":"Objective Development, rebuilt 1"}');
+    expect(h.modelText()).toContain('"knownNEs":["com.example.vpn"]');
+    expect(h.modelText()).toContain('"geoViewMyLocationLatitude":40.4');
+  });
+
   it('keeps terminal access switched on across the change', async () => {
     const h = await start();
     await h.call('add_rule', NEW_RULE);

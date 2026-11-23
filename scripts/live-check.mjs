@@ -25,6 +25,7 @@ import { createContext } from '../dist/context.js';
 import { detectEncoding } from '../dist/model/dates.js';
 import { isObject, parseModelText } from '../dist/model/json.js';
 import { activeProfile } from '../dist/model/profiles.js';
+import { compareModels } from '../dist/model/verify.js';
 import { parseTraffic, formatTrafficDate } from '../dist/traffic.js';
 import { readStatus } from '../dist/tools/status.js';
 
@@ -120,10 +121,13 @@ async function readChecks() {
   });
 
   const now = new Date();
+  // The server names the user it acts for with "-u". The first read leaves that out, to see whether it makes a difference.
+  const user = ['-u', String(ctx.uid)];
   const steps = [
     { name: 'export-model', args: ['export-model'] },
-    { name: 'list-preferences', args: ['list-preferences'] },
-    { name: 'log-traffic', args: ['log-traffic', '--begin-date', formatTrafficDate(new Date(now.getTime() - 15 * 60_000)), '--end-date', formatTrafficDate(now)] },
+    { name: 'export-model on behalf of the user', args: [...user, 'export-model'] },
+    { name: 'list-preferences', args: [...user, 'list-preferences'] },
+    { name: 'log-traffic', args: [...user, 'log-traffic', '--begin-date', formatTrafficDate(new Date(now.getTime() - 15 * 60_000)), '--end-date', formatTrafficDate(now)] },
   ];
   let outputs;
   try {
@@ -156,14 +160,35 @@ async function readChecks() {
     }
   };
   report(0, 'Configuration shape', (text) => ({ bytes: text.length, ...modelShape(parseModelText(text)) }));
-  report(1, 'Preference listing format', (text) => {
+  let sameForUser = false;
+  report(1, 'The same export on behalf of the user', (text) => {
+    const plain = parseModelText(outputs[0].stdout);
+    const forUser = parseModelText(text);
+    const comparison = compareModels(plain, forUser);
+    sameForUser = comparison.ok;
+    const uids = (model) => (Array.isArray(model.users) ? model.users.map((entry) => Number(entry.uid?.value ?? entry.uid)) : []);
+    return {
+      sameAsPlainExport: comparison.ok,
+      rules: Array.isArray(forUser.rules) ? forUser.rules.length : 'not a list',
+      userIds: uids(forUser),
+      partsThatDiffer: comparison.changedSections,
+      preferenceKeysThatDiffer: comparison.changedPreferenceKeys,
+      rulesMissing: comparison.missing.length,
+      rulesExtra: comparison.unexpected.length,
+    };
+  });
+  report(2, 'Preference listing format', (text) => {
     const lines = text.split('\n').filter((line) => line.trim() !== '');
     return { lines: lines.length, keys: lines.flatMap((line) => /^\s*([A-Za-z0-9_.-]+) = /.exec(line)?.[1] ?? []), firstLineFormat: mask(lines[0] ?? '') };
   });
-  report(2, 'Traffic log format', (text) => {
+  report(3, 'Traffic log format', (text) => {
     const lines = text.split('\n');
     return { header: lines[0] ?? '', rowsParsed: parseTraffic(text).length, firstRowFormat: mask(lines[1] ?? ''), bytes: text.length };
   });
+  if (!sameForUser) {
+    section('Stopping here', 'An export on behalf of the user is not the same as a plain export, so nothing will be written.');
+    return false;
+  }
   return true;
 }
 

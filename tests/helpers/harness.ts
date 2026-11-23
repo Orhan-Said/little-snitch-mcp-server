@@ -63,8 +63,10 @@ export interface Harness {
   /** The fake firewall's configuration as it is now. */
   model(): JsonObject;
   modelText(): string;
-  /** Every invocation of the fake tool, as argument lists. */
+  /** Every invocation of the fake tool, as argument lists, without the "-u <user>" in front. */
   calls(): readonly (readonly string[])[];
+  /** Every invocation exactly as it was made. */
+  rawCalls(): readonly (readonly string[])[];
   /** Calls a tool and returns its parsed result together with the error flag. */
   call(name: string, args?: Record<string, unknown>): Promise<{ readonly isError: boolean; readonly data: any }>;
   close(): Promise<void>;
@@ -93,6 +95,7 @@ export function installFake(root: string, options: HarnessOptions = {}): { reado
   write('preferences.txt', PREFERENCES_TEXT);
   write('log.json', LOG_JSON);
   write('calls.jsonl', '');
+  write('raw-calls.jsonl', '');
   // The server gives its children a fixed PATH, so the wrapper names node by its full path.
   writeFileSync(cliPath, `#!/bin/sh\nexec "${process.execPath}" "${FAKE}" "${stateDir}" "$@"\n`);
   chmodSync(cliPath, 0o755);
@@ -111,17 +114,19 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
 
   const modelText = (): string => readFileSync(path.join(stateDir, 'model.json'), 'utf8');
+  const readCalls = (name: string): string[][] =>
+    readFileSync(path.join(stateDir, name), 'utf8')
+      .split('\n')
+      .filter((line) => line !== '')
+      .map((line) => JSON.parse(line) as string[]);
   return {
     client,
     dataDir,
     lockFile: config.lockFile,
     modelText,
     model: () => parseModelText(modelText()),
-    calls: () =>
-      readFileSync(path.join(stateDir, 'calls.jsonl'), 'utf8')
-        .split('\n')
-        .filter((line) => line !== '')
-        .map((line) => JSON.parse(line) as string[]),
+    calls: () => readCalls('calls.jsonl'),
+    rawCalls: () => readCalls('raw-calls.jsonl'),
     async call(name, args = {}) {
       const result = await client.callTool({ name, arguments: args });
       const content = result.content as Array<{ type: string; text?: string }>;

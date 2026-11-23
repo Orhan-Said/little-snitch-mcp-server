@@ -131,13 +131,31 @@ What it could not show:
 - There were no profiles, so their shape and the place of the active profile are still unknown.
 - Nothing was written. Whether `restore-model` takes a changed configuration as sent is the open question the write check answers.
 
+## What the first write showed
+
+The same day the owner ran `npm run live-check -- --write-only`. The server added one test rule through the administrator dialog, compared, and undid it. This was the first change made to a real Little Snitch.
+
+What it confirmed:
+
+- Little Snitch 6.5 takes a new rule as the server writes it. The rule came back with every field as sent, including the origin `frontend` and the note, and with nothing added.
+- All other rules, several hundred, came back unchanged, both after the change and after the undo.
+- The script that runs as root works under a real administrator dialog: the copy into root's folder, the checksum, the restore from the copy, and the read-back under the same approval.
+- `--preserve-terminal-access` kept terminal access on.
+- The check and the undo ran as designed. The check found differences, and the undo put the rules back.
+
+What it corrected:
+
+- A restore makes Little Snitch rewrite two sections by itself: `developerTeamNames` and `knownNEs`. Both are now on the list of sections Little Snitch owns.
+- A restore writes the map position of the Network Monitor back under keys that start with a small letter. The volatile preference keys are now compared without regard to letter case.
+- A restore run as plain root added a preferences record for the root user (uid 0) to the configuration. Under the administrator dialog nothing tells the tool for whom it acts. Every privileged command now carries `-u <uid>`, the tool's own option for that. The simulator does the same as the real tool: without `-u` it adds the record, and the strict check then fails.
+
+Because of those three, the check reported a difference although the rules were right, and it reported the undo as unverified for the same reason. That was the strict check working as intended on a list that was too short.
+
 ## Open questions
 
-These need a run that changes something. `npm run live-check -- --write` adds and removes one test rule and reports what differed.
-
-- Whether `restore-model` accepts a new rule with the origin `frontend` and a `notes` field, and returns it as sent.
-- Whether a restore changes anything outside the rule list on its own. The check after a change is strict, so every such part must either stay the same or be on one of two short lists in `src/model/verify.ts`: `LITTLE_SNITCH_OWNED_SECTIONS` and `VOLATILE_PREFERENCE_KEYS`. If a list is too short for 6.5, the change is undone and the error names the part or the key.
-- Whether Little Snitch respells a rule in a way `tolerantKey` in `src/model/rules.ts` does not expect.
-- Which key holds the active profile.
+- Whether `-u <uid>` keeps a restore from adding a record for root. It is the documented purpose of the option, and the tool accepts it, but no restore has run with it yet.
+- Whether a restore changes anything else outside the rule list on its own. If it does, the change is undone and the error names the part or the preference key.
+- Whether Little Snitch respells a rule in a way `tolerantKey` in `src/model/rules.ts` does not expect. For a simple host rule it does not.
+- Which key holds the active profile, and what profiles look like.
 - Whether macOS shows a prompt of about 1,000 characters whole in the administrator dialog.
 - Whether a command started by the administrator dialog keeps running when `osascript` is killed. Without administrator rights it does.

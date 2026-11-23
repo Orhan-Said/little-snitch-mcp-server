@@ -86,7 +86,7 @@ export function sampleModelText(options: SampleOptions = {}): string {
   "noProfilePseudoProfile": { "name": "Effective in all profiles" },
   "globalDefaults": { "allowCommandLineAccess": true, "networkFilterEnabled": true, "activeSilentMode": 0, "ipAddressDatabaseLastUpdateCheck": 816000000 },
   "users": [
-    { "uid": 501, "shortName": "tester", "fullName": "Test User", "defaults": { "activeProfile": "p2", "markNewRulesAsUnapproved": false, "pidOfLSCShowingWelcomeWindow": 0 } }
+    { "uid": 501, "shortName": "tester", "fullName": "Test User", "defaults": { "activeProfile": "p2", "markNewRulesAsUnapproved": false, "pidOfLSCShowingWelcomeWindow": 0, "GeoViewMyLocationLatitude": 40.4, "GeoViewMyLocationLongitude": 49.8 } }
   ],
   "networkTriggers": [],
   "disabledDomainsInLists": [],

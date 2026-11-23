@@ -42,6 +42,8 @@ export interface CliDeps {
   readonly elevator: Elevator;
   readonly binary: BinaryChecker;
   readonly config: Pick<Config, 'cliPath' | 'elevation' | 'commandTimeoutMs'>;
+  /** The macOS user the server works for. Privileged commands are run on this user's behalf. */
+  readonly uid: number;
 }
 
 const TRAFFIC_DATE = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
@@ -102,11 +104,23 @@ export function createCli(deps: CliDeps): LittleSnitchCli {
     return { code: result.code ?? -1, stdout: result.stdout, stderr: result.stderr };
   };
 
+  /**
+   * Tells the tool for which user it acts. Under the administrator dialog the
+   * tool runs as plain root, with nothing that names the person. Without this
+   * option Little Snitch 6.5 then treats root as the user: a restore added a
+   * preferences record for uid 0 to the configuration (seen on 2026-11-23).
+   */
+  const onBehalfOfUser = (step: Step): Step => ({
+    ...step,
+    args: ['-u', String(deps.uid), ...step.args],
+    ...(step.input === undefined ? {} : { input: { ...step.input, index: step.input.index + 2 } }),
+  });
+
   const elevated = async (steps: readonly Step[], reason: string): Promise<{ outputs: readonly StepOutput[]; method: Method }> => {
     if (config.elevation !== 'none') {
       await binary.assertTrusted();
     }
-    const run = await elevator.run(steps, reason);
+    const run = await elevator.run(steps.map(onBehalfOfUser), reason);
     return { outputs: run.steps, method: run.method };
   };
 

@@ -244,16 +244,28 @@ describe('compareModels', () => {
     const after = parseModelText(
       serializeModel(before)
         .replace('"bundleVersion":6500', '"bundleVersion":6501')
+        .replace('"factoryRuleSetVersion":12', '"factoryRuleSetVersion":13')
         .replace('"blocklistStatistics":{}', '"blocklistStatistics":{"hits":9}')
         .replace('"statisticsModelCreationDate":780000000', '"statisticsModelCreationDate":780000099')
         .replace('"lastSeenExecutableByCodeIdentifier":{', '"lastSeenExecutableByCodeIdentifier":{"a":"b",')
-        .replace('"factoryRuleSetVersion":12', '"factoryRuleSetVersion":13'),
+        .replace('"developerTeamNames":{}', '"developerTeamNames":{"MLZF7K7B5R":"Objective Development"}')
+        .replace('"knownNEs":[]', '"knownNEs":["com.example.vpn"]'),
     );
     expect(compareModels(before, after).ok).toBe(true);
-    // Sections that hold identity checks and other extensions are not among them.
-    for (const [from, to] of [['"codeRequirements":{}', '"codeRequirements":{"/x":"anchor apple"}'], ['"knownNEs":[]', '"knownNEs":["x"]'], ['"developerTeamNames":{}', '"developerTeamNames":{"T":"n"}']] as const) {
-      expect(compareModels(before, parseModelText(serializeModel(before).replace(from, to))).ok).toBe(false);
-    }
+    // The table of code signing requirements decides which program a rule applies to. It is not among them.
+    const tampered = parseModelText(serializeModel(before).replace('"codeRequirements":{}', '"codeRequirements":{"/x":"anchor apple"}'));
+    expect(compareModels(before, tampered)).toMatchObject({ ok: false, changedSections: ['codeRequirements'] });
+  });
+
+  it('accepts what a real restore did to the preferences, and nothing more', () => {
+    const before = sampleModel();
+    const text = serializeModel(before);
+    // Seen on Little Snitch 6.5: the map position came back under keys that start with a small letter.
+    const renamed = parseModelText(text.replace('"GeoViewMyLocationLatitude":40.4,"GeoViewMyLocationLongitude":49.8', '"geoViewMyLocationLatitude":40.4,"geoViewMyLocationLongitude":49.8'));
+    expect(compareModels(before, renamed).ok).toBe(true);
+    // Also seen: a restore run as plain root added a record for the root user. That is a difference.
+    const withRoot = parseModelText(text.replace('"users":[', '"users":[{"uid":0,"shortName":"root","fullName":"System Administrator","defaults":{}},'));
+    expect(compareModels(before, withRoot)).toMatchObject({ ok: false, changedSections: ['users'], changedPreferenceKeys: ['users[uid 0].defaults'] });
   });
 
   it('reports a rule that was lost, and one that was not removed', () => {

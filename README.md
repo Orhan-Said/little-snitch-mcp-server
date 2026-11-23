@@ -27,7 +27,8 @@ Read this before you rely on the server. Little Snitch's tool needs root and a s
 | The administrator dialog with a real password, with three reads under one approval | On Little Snitch 6.5 |
 | Reading and parsing a real configuration of several hundred rules, the preference listing and the traffic history | On Little Snitch 6.5. Only key names, counts and formats were recorded. |
 | The lock that keeps two changes apart | With macOS `lockf`: twelve takers at once, and a holder that is killed |
-| The shell text for a restore, with its checked private copy | With `/bin/sh` and `osascript`, without the administrator step |
+| The restore under the administrator dialog, with its checked private copy in root's folder | On Little Snitch 6.5 |
+| Adding one rule and undoing it: the rule came back as written, and every other rule stayed as it was | On Little Snitch 6.5. The check after the change still reported a difference, because Little Snitch rewrites three parts by itself during a restore. Those are now known to the server, and that fix has not run on a real Little Snitch yet. |
 | Listing and filtering rules, groups, traffic and preferences | Against the simulator in `tests/fixtures/fake-littlesnitch.mjs`, whose configuration has the shape of that real one |
 | Adding, changing and removing rules, switching groups and profiles, with the check afterwards and the undo | Against the simulator |
 | Profiles | Against the simulator only. The real configuration had none, so their shape comes from older notes. |
@@ -35,7 +36,7 @@ Read this before you rely on the server. Little Snitch's tool needs root and a s
 
 The simulator follows Objective Development's documentation, the shape of a real Little Snitch 6.5 configuration, and for what that configuration did not contain, the format that the [torsday/little-snitch-mcp](https://github.com/torsday/little-snitch-mcp) project recorded from Little Snitch 6.3.3. Where your Little Snitch differs, the server reports what it could not read. It does not guess.
 
-The check after a change is strict, and no change has been made to a real Little Snitch yet. If Little Snitch rewrites something this project does not know about, the server will undo every change and tell you which part differed, down to the name of the preference key. You can find out on your own Mac in two minutes. See [Check it on your Mac](#check-it-on-your-mac).
+The check after a change is strict. If Little Snitch rewrites something this project does not know about, the server undoes the change and tells you which part differed, down to the name of the preference key. That happened on the first real change, and it may happen again on a version of Little Snitch nobody has tried. You can find out on your own Mac in two minutes. See [Check it on your Mac](#check-it-on-your-mac).
 
 ## Requirements
 
@@ -173,6 +174,7 @@ An assistant that can change a firewall deserves suspicion. The server takes the
 - The prompt is built from the rule's fields, with the action and the remote first, then the process, a note if there is one, and the macOS user if the rule belongs to someone else. A long process path keeps its beginning and its end. For a change to a rule, the prompt ends with the rule as it will be.
 - A rule whose remote list does not fit into the prompt cannot be added, changed or removed through the server. Paths and notes with invisible characters are refused.
 - Before it runs the tool as root, the server checks that the file is owned by root, that nobody else can write to it, and that Objective Development signed it (team `MLZF7K7B5R`).
+- It tells the tool for which macOS user it acts (`-u`). Without that, a restore run as root adds a preferences record for the root user to your configuration.
 - It passes arguments to the tool as a list, with no shell in between. The administrator dialog is the one place that needs a shell string. There, the server quotes every word and hands the string to AppleScript as an argument.
 - It refuses a rule for any process and any remote, which would switch the firewall off or cut the Mac off from the network.
 - It refuses to change or remove protected rules and factory rules.
@@ -228,7 +230,7 @@ A flag wins over its environment variable. The server stops at startup if it doe
 ## Development
 
 ```bash
-npm test               # 310 tests, about 30 seconds
+npm test               # 313 tests, about 30 seconds
 npm run typecheck
 npm run test:coverage
 ```

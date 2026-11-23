@@ -5,14 +5,21 @@ import { ruleRef, summarizeRule, tolerantKey, type RuleSummary } from './rules.j
 
 /**
  * Parts of the configuration that Little Snitch writes on its own account:
- * counters, caches of programs it has seen, and its own version markers. They
- * hold no rule, switch or preference, so a difference in them is not a
- * difference in the firewall. Everything else must match exactly.
+ * counters, caches of programs and developers it has seen, the network
+ * extensions it knows, and its own version markers. They hold no rule, switch
+ * or preference, so a difference in them is not a difference in the firewall.
+ * Everything else must match exactly.
+ *
+ * "developerTeamNames" and "knownNEs" are on the list because a real restore
+ * on Little Snitch 6.5 came back with both rewritten, although the restored
+ * file had them unchanged (2026-11-23).
  */
 export const LITTLE_SNITCH_OWNED_SECTIONS = [
   'blocklistStatistics',
   'statisticsModelCreationDate',
   'lastSeenExecutableByCodeIdentifier',
+  'developerTeamNames',
+  'knownNEs',
   'bundleVersion',
   'factoryRuleSetVersion',
 ] as const;
@@ -20,8 +27,11 @@ export const LITTLE_SNITCH_OWNED_SECTIONS = [
 /**
  * Preference keys that hold no policy and that Little Snitch rewrites while it
  * runs: the process id of an open window, the time of its last address
- * database check, the map position of the Network Monitor. They were chosen
- * from their names in a real 6.5 configuration, not from watching them change.
+ * database check, the map position of the Network Monitor. The first three
+ * were chosen from their names in a real 6.5 configuration, not from watching
+ * them change. The map position was seen to change: a restore wrote it back
+ * under a key that starts with a small letter. So the names are compared
+ * without regard to letter case.
  * A difference in them alone is not a difference in the firewall.
  */
 export const VOLATILE_PREFERENCE_KEYS = [
@@ -95,8 +105,10 @@ function describeGroupsAndProfiles(expected: JsonObject, actual: JsonObject): re
   return changes;
 }
 
+const VOLATILE_LOWERCASE: readonly string[] = VOLATILE_PREFERENCE_KEYS.map((key) => key.toLowerCase());
+
 const dropVolatile = (preferences: JsonValue | undefined): JsonValue | undefined =>
-  isObject(preferences) ? without(preferences, VOLATILE_PREFERENCE_KEYS) : preferences;
+  isObject(preferences) ? without(preferences, Object.keys(preferences).filter((key) => VOLATILE_LOWERCASE.includes(key.toLowerCase()))) : preferences;
 
 /** The configuration with the volatile preference keys taken out of the global and the per-user preferences. */
 function withoutVolatilePreferences(model: JsonObject): JsonObject {
