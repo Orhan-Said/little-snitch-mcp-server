@@ -49,14 +49,7 @@ The check after a change is strict. If Little Snitch rewrites something this pro
 
 ## Install
 
-```bash
-git clone https://github.com/Orhan-Said/little-snitch-mcp-server.git
-cd little-snitch-mcp-server
-npm install
-npm run build
-```
-
-Then tell your MCP client to start `dist/index.js`.
+The package is on npm as [`little-snitch-mcp-server`](https://www.npmjs.com/package/little-snitch-mcp-server). Your MCP client starts it with `npx`, which downloads it the first time.
 
 Claude Desktop, in `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
@@ -64,8 +57,8 @@ Claude Desktop, in `~/Library/Application Support/Claude/claude_desktop_config.j
 {
   "mcpServers": {
     "little-snitch": {
-      "command": "node",
-      "args": ["/absolute/path/to/little-snitch-mcp-server/dist/index.js"]
+      "command": "npx",
+      "args": ["-y", "little-snitch-mcp-server@0.1.0"]
     }
   }
 }
@@ -74,10 +67,27 @@ Claude Desktop, in `~/Library/Application Support/Claude/claude_desktop_config.j
 Claude Code:
 
 ```bash
-claude mcp add little-snitch -- node /absolute/path/to/little-snitch-mcp-server/dist/index.js
+claude mcp add little-snitch -- npx -y little-snitch-mcp-server@0.1.0
 ```
 
+The examples name a version on purpose. This server can change your firewall, so a new version should run only when you choose it. Without a version, `npx` may start a newer release the next time your client starts. To update, read the [changelog](CHANGELOG.md) and change the number.
+
+If Claude Desktop reports that it cannot find `npx`, put the full path in `command`. `which npx` prints it, for example `/opt/homebrew/bin/npx`.
+
 Started this way, the server only reads. Ask the assistant to "check the Little Snitch status". The `get_status` tool lists what is still missing on your Mac.
+
+### From source
+
+To read the code before you run it, or to run the [check on your Mac](#check-it-on-your-mac):
+
+```bash
+git clone https://github.com/Orhan-Said/little-snitch-mcp-server.git
+cd little-snitch-mcp-server
+npm install
+npm run build
+```
+
+Then use `"command": "node"` with `"args": ["/absolute/path/to/little-snitch-mcp-server/dist/index.js"]` in place of the `npx` lines above.
 
 ## Root access
 
@@ -107,7 +117,7 @@ By default the server offers reading tools only. The tools that change something
 For example, in the Claude Desktop config:
 
 ```json
-"args": ["/absolute/path/to/little-snitch-mcp-server/dist/index.js", "--allow", "switches,rules"]
+"args": ["-y", "little-snitch-mcp-server@0.1.0", "--allow", "switches,rules"]
 ```
 
 Two settings remove the approval for changes. Use them only if that is what you want:
@@ -209,7 +219,7 @@ The server tells the assistant that process paths, host names and rule notes are
 
 ## Check it on your Mac
 
-After `npm run build`:
+In a copy of the repository, after the steps in [From source](#from-source):
 
 ```bash
 npm run live-check
@@ -240,14 +250,14 @@ A flag wins over its environment variable. The server stops at startup if it doe
 ## Development
 
 ```bash
-npm test               # 313 tests, about 30 seconds
+npm test               # 372 tests, about 30 seconds
 npm run typecheck
 npm run test:coverage
 ```
 
 The tests never touch a real Little Snitch. `tests/fixtures/fake-littlesnitch.mjs` stands in for the tool and can misbehave on request. It can drop a rule, flip an action, add a rule nobody asked for, change a preference, switch the wrong group or fail a read-back, so that the check and the undo run. Two tests look at the real tool's ownership and signature when Little Snitch is installed, and skip otherwise.
 
-[docs/design.md](docs/design.md) explains the decisions behind the server, and what two outside reviews changed.
+[docs/design.md](docs/design.md) explains the decisions behind the server, and what three outside reviews changed.
 
 ## Related work
 
