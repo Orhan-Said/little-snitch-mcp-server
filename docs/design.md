@@ -178,6 +178,17 @@ Before writing, the run exported the configuration twice under one approval, onc
 
 One thing the run could not show. The record for the root user from the first attempt was still in the configuration, so the run does not tell whether `-u` keeps a restore from adding it.
 
+## What the third write showed
+
+After the third review's fixes the owner ran `npm run live-check -- --write` again (2026-11-23). It passed with the version in this repository: the lock for the whole Mac, the look at the list of running programs before each change, the check that the prompt can show the rule, and the new reading of the Security switches all ran on a real Little Snitch 6.5 without a false refusal.
+
+What it added:
+
+- Little Snitch writes the two Security switches as numbers. Both were on and read as "on". The earlier check, which refused only on an exact `false`, would never have refused on this Mac. That confirms the reviewers' finding. A switch that is off was not seen; the server takes it to be 0.
+- The two exports, with and without `-u`, were identical in every part, the seven left-out sections included.
+- Little Snitch rewrote `developerTeamNames` and `knownNEs` when the rule was added, and `knownNEs` when it was removed. The results named them.
+- Rules also carry the fields `approved`, `owner`, `hidden` and `factoryHelpText`. The server shows them and does not interpret them. No rule had a remote field other than the four the server knows.
+
 ## Open questions
 
 - Whether `-u <uid>` keeps a restore from adding a record for root. It is the documented purpose of the option, and a restore with it works, but the record already existed when the fix ran.
@@ -189,5 +200,5 @@ One thing the run could not show. The record for the root user from the first at
 - Whether a command started by the administrator dialog keeps running when `osascript` is killed. Without administrator rights it does. The server now assumes that it does.
 - Whether such a command always shows in the list of running programs with the tool's path and its command, as it does for the processes this was tried with.
 - What `knownNEs` and `developerTeamNames` hold, and whether `knownNEs` affects filtering.
-- How Little Snitch writes the two Security switches when they are off, and whether every version writes them at all. The server reads the common forms of yes and no.
+- How Little Snitch writes the two Security switches when they are off, and whether every version writes them at all. On 6.5 they are numbers and were seen switched on. The server reads the common forms of yes and no.
 - Whether two macOS users can share the lock file in practice. The file is readable by all, and `lockf` locks a file it can only read, but only one user was tried.
