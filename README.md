@@ -43,7 +43,7 @@ The check after a change is strict. If Little Snitch rewrites something this pro
 ## Requirements
 
 - macOS with Little Snitch 6. The server was built against version 6.5.
-- Node.js 20 or newer.
+- Node.js 22.12 or newer.
 - An administrator account on the Mac.
 - In Little Snitch, open Settings, go to Security, and switch on "Allow access via Terminal" in the group "Other". Little Snitch keeps this off by default, because its command-line tool can change the firewall. Switch it on only if you want to use this server.
 
