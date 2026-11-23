@@ -70,4 +70,14 @@ The folder has mode 0700 and the files 0600, so other users of the Mac cannot re
 
 ## Dependencies
 
-Three packages run in the server: `@modelcontextprotocol/sdk`, `zod` and `lossless-json`. CI runs `npm audit` on every push.
+Three packages run in the server: `@modelcontextprotocol/sdk`, `zod` and `lossless-json`. CI runs `npm audit` on every push. Dependabot proposes updates weekly, each at least a week old, and CodeQL scans the code and the workflows.
+
+## Releases
+
+Version 0.1.0 was published to npm by hand, because npm accepts a workflow as publisher only for a package that already exists. Later versions are published by `.github/workflows/release.yml` from a `v*` tag, through npm's trusted publishing: no npm token exists, and each release carries a provenance statement that names the commit and the workflow run. To check a release you installed:
+
+```bash
+npm audit signatures
+```
+
+Release tags cannot be moved or deleted, and the workflow uses only GitHub's own actions, each pinned to a commit.

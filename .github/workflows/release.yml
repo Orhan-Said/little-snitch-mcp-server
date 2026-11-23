@@ -1,0 +1,63 @@
+name: Release
+
+# Publishes the package to npm when a version tag such as v0.1.1 is pushed.
+# npm trusts this workflow through OIDC (trusted publishing): no npm token is
+# stored anywhere, and each release gets a provenance statement that ties it
+# to the commit and the workflow run that built it.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    # The environment accepts only v* tags, and npm accepts only this workflow in this environment.
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          # No cache in a release, so nothing a cache holds can reach a published package.
+          package-manager-cache: false
+      - name: Check that the tag matches the package version
+        run: |
+          expected="v$(node -p "require('./package.json').version")"
+          if [ "$expected" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::The tag is $GITHUB_REF_NAME, but package.json says $expected."
+            exit 1
+          fi
+      - name: Check that npm can publish with trusted publishing (11.5.1 or newer)
+        run: |
+          node -e '
+            const [major, minor, patch] = process.argv[1].split(".").map(Number);
+            const ok = major > 11 || (major === 11 && (minor > 5 || (minor === 5 && patch >= 1)));
+            if (!ok) { console.error(`npm ${process.argv[1]} is older than 11.5.1.`); process.exit(1); }
+          ' "$(npm --version)"
+      - run: npm ci --ignore-scripts
+      - run: npm audit --omit=dev --audit-level=moderate
+      # npm publish runs prepublishOnly (type-check and tests) and prepare (build) first.
+      - name: Publish, unless this version is already on npm
+        run: |
+          name="$(node -p "require('./package.json').name")"
+          version="$(node -p "require('./package.json').version")"
+          if npm view "$name@$version" version >/dev/null 2>&1; then
+            echo "$name@$version is already on npm. Nothing to publish."
+            exit 0
+          fi
+          npm publish
