@@ -24,6 +24,7 @@ import { loadConfig } from '../dist/config.js';
 import { createContext } from '../dist/context.js';
 import { detectEncoding } from '../dist/model/dates.js';
 import { canonical, isObject, parseModelText } from '../dist/model/json.js';
+import { littleSnitchSwitch } from '../dist/model/permissions.js';
 import { activeProfile } from '../dist/model/profiles.js';
 import { compareModels } from '../dist/model/verify.js';
 import { parseTraffic, formatTrafficDate } from '../dist/traffic.js';
@@ -93,6 +94,18 @@ function modelShape(model) {
     globalDefaultKeys: isObject(model.globalDefaults) ? Object.keys(model.globalDefaults).sort() : [],
     noProfilePseudoProfileKeys: isObject(model.noProfilePseudoProfile) ? Object.keys(model.noProfilePseudoProfile).sort() : [],
     activeProfileFound: activeProfile(model, process.getuid?.()).known,
+    securitySwitches: securitySwitches(model, users),
+  };
+}
+
+/** How the two switches under Settings > Security read for the user who runs this, and in which JSON type Little Snitch wrote them. */
+function securitySwitches(model, users) {
+  const uid = process.getuid?.() ?? 0;
+  const own = users.find((user) => String(user.uid?.value ?? user.uid) === String(uid));
+  const writtenAs = (key) => (isObject(own?.defaults) && key in own.defaults ? typeOf(own.defaults[key]) : 'missing');
+  return {
+    allowRuleEditing: `${littleSnitchSwitch(model, uid, 'edit-rules')} (written as ${writtenAs('allowRuleAndProfileEditing')})`,
+    allowProfileSwitching: `${littleSnitchSwitch(model, uid, 'switch-profile')} (written as ${writtenAs('allowProfileSwitching')})`,
   };
 }
 
@@ -251,13 +264,14 @@ async function writeCheck() {
       approvedThrough: added.approvedThrough,
       ruleReadBack: added.rule,
       backupSaved: typeof added.backup === 'string',
+      rewrittenByLittleSnitch: added.rewrittenByLittleSnitch,
       warnings: added.warnings,
     });
     const removed = await call('remove_rule', { ref: added.rule.ref });
-    section('Write check: remove (two approvals)', { applied: removed.applied, warnings: removed.warnings });
+    section('Write check: remove (two approvals)', { applied: removed.applied, rewrittenByLittleSnitch: removed.rewrittenByLittleSnitch, warnings: removed.warnings });
     const left = (await call('list_rules', { remote: TEST_HOST })).rules.length;
     section('Write check: test rules left afterwards', left);
-    section('Write check result', left === 0 ? 'PASSED: a rule was added, checked against the whole configuration, removed, and confirmed gone.' : 'FAILED: the test rule is still there.');
+    section('Write check result', left === 0 ? 'PASSED: a rule was added, checked against every rule, rule group, profile and preference, removed, and confirmed gone.' : 'FAILED: the test rule is still there.');
   } catch (error) {
     section('Write check: FAILED', { kind: error.kind ?? 'internal', message: error.message, remedy: error.remedy, details: safeDetails(error.details) });
     process.exitCode = 1;
