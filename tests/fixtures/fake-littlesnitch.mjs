@@ -105,8 +105,15 @@ switch (command) {
       settings.restoreTakesMs = 0;
       saveSettings();
       writeFileSync(file('restore-at-work'), '');
-      const later = `setTimeout(() => { require('node:child_process').spawnSync(process.execPath, process.argv.slice(1), { env: { ...process.env, LSMCP_FAKE_LATE: '1' } }); require('node:fs').rmSync(${JSON.stringify(file('restore-at-work'))}, { force: true }); }, ${Number(wait)});`;
-      spawn(process.execPath, ['-e', later, fileURLToPath(import.meta.url), stateDir, ...rawArgs], { detached: true, stdio: 'ignore' }).unref();
+      // The script is fixed text. The marker file and the wait reach it through the environment, so nothing is
+      // pasted into code.
+      const later =
+        "setTimeout(() => { require('node:child_process').spawnSync(process.execPath, process.argv.slice(1), { env: { ...process.env, LSMCP_FAKE_LATE: '1' } }); require('node:fs').rmSync(process.env.LSMCP_FAKE_MARKER, { force: true }); }, Number(process.env.LSMCP_FAKE_WAIT_MS));";
+      spawn(process.execPath, ['-e', later, fileURLToPath(import.meta.url), stateDir, ...rawArgs], {
+        detached: true,
+        stdio: 'ignore',
+        env: { ...process.env, LSMCP_FAKE_MARKER: file('restore-at-work'), LSMCP_FAKE_WAIT_MS: String(Number(wait)) },
+      }).unref();
       setInterval(() => undefined, 1000);
       await new Promise(() => undefined);
     }
