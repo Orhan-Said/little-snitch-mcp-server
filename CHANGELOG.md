@@ -13,6 +13,6 @@ First version.
 - One change at a time, with a kernel-held lock that frees itself when the server dies.
 - `npm run live-check` to test the server against the Little Snitch on your own Mac.
 
-Checked on Little Snitch 6.5 and macOS 26.6 as far as that is possible without root. The README lists what was tested how.
+Checked on Little Snitch 6.5 and macOS 26.6: reading, and adding and removing a rule, ran on a real install. The README lists what was tested how.
 
 Reviewed twice before release by three outside models. `docs/design.md` lists what they found and what changed.

@@ -28,15 +28,16 @@ Read this before you rely on the server. Little Snitch's tool needs root and a s
 | Reading and parsing a real configuration of several hundred rules, the preference listing and the traffic history | On Little Snitch 6.5. Only key names, counts and formats were recorded. |
 | The lock that keeps two changes apart | With macOS `lockf`: twelve takers at once, and a holder that is killed |
 | The restore under the administrator dialog, with its checked private copy in root's folder | On Little Snitch 6.5 |
-| Adding one rule and undoing it: the rule came back as written, and every other rule stayed as it was | On Little Snitch 6.5. The check after the change still reported a difference, because Little Snitch rewrites three parts by itself during a restore. Those are now known to the server, and that fix has not run on a real Little Snitch yet. |
+| Adding a rule and removing it again, each followed by the comparison of the whole configuration | On Little Snitch 6.5. It passed on the second attempt. The first attempt found three parts that Little Snitch rewrites by itself during a restore, and the server undid the change. |
+| The undo after a failed check | On Little Snitch 6.5, in that first attempt: it put every rule back |
 | Listing and filtering rules, groups, traffic and preferences | Against the simulator in `tests/fixtures/fake-littlesnitch.mjs`, whose configuration has the shape of that real one |
-| Adding, changing and removing rules, switching groups and profiles, with the check afterwards and the undo | Against the simulator |
+| Changing a rule, restoring a backup, switching rule groups | Against the simulator, which does on every restore what the real tool did |
 | Profiles | Against the simulator only. The real configuration had none, so their shape comes from older notes. |
 | Touch ID for sudo | Not run |
 
 The simulator follows Objective Development's documentation, the shape of a real Little Snitch 6.5 configuration, and for what that configuration did not contain, the format that the [torsday/little-snitch-mcp](https://github.com/torsday/little-snitch-mcp) project recorded from Little Snitch 6.3.3. Where your Little Snitch differs, the server reports what it could not read. It does not guess.
 
-The check after a change is strict. If Little Snitch rewrites something this project does not know about, the server undoes the change and tells you which part differed, down to the name of the preference key. That happened on the first real change, and it may happen again on a version of Little Snitch nobody has tried. You can find out on your own Mac in two minutes. See [Check it on your Mac](#check-it-on-your-mac).
+The check after a change is strict. If Little Snitch rewrites something this project does not know about, the server undoes the change and tells you which part differed, down to the name of the preference key. That happened on the first real change, and it may happen again on a version of Little Snitch nobody has tried, or with a kind of change nobody has tried on a real one. You can find out on your own Mac in two minutes. See [Check it on your Mac](#check-it-on-your-mac).
 
 ## Requirements
 

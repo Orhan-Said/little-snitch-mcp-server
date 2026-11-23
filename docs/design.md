@@ -151,11 +151,20 @@ What it corrected:
 
 Because of those three, the check reported a difference although the rules were right, and it reported the undo as unverified for the same reason. That was the strict check working as intended on a list that was too short.
 
+## What the second write showed
+
+After those fixes the owner ran `npm run live-check -- --write`. It passed: the test rule was added, the whole configuration compared equal to the intended one, the rule was removed, and the configuration compared equal again. Each change went through the administrator dialog and was read back under the same approval.
+
+Before writing, the run exported the configuration twice under one approval, once with `-u <uid>` and once without. The two were the same: the same rules, the same users, no part different. So the option does not change what an export returns.
+
+One thing the run could not show. The record for the root user from the first attempt was still in the configuration, so the run does not tell whether `-u` keeps a restore from adding it.
+
 ## Open questions
 
-- Whether `-u <uid>` keeps a restore from adding a record for root. It is the documented purpose of the option, and the tool accepts it, but no restore has run with it yet.
+- Whether `-u <uid>` keeps a restore from adding a record for root. It is the documented purpose of the option, and a restore with it works, but the record already existed when the fix ran.
 - Whether a restore changes anything else outside the rule list on its own. If it does, the change is undone and the error names the part or the preference key.
 - Whether Little Snitch respells a rule in a way `tolerantKey` in `src/model/rules.ts` does not expect. For a simple host rule it does not.
+- How `update_rule`, `restore_backup` and the two switch tools behave on a real Little Snitch. Only `add_rule` and `remove_rule` have run there.
 - Which key holds the active profile, and what profiles look like.
 - Whether macOS shows a prompt of about 1,000 characters whole in the administrator dialog.
 - Whether a command started by the administrator dialog keeps running when `osascript` is killed. Without administrator rights it does.
