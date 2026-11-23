@@ -8,6 +8,7 @@ import { LittleSnitchError } from '../errors.js';
 import { addRule, buildRule, removeRule, SPECIAL_REMOTES, updateRule, validateNewRule, type NewRuleSpec, type RulePatch } from '../model/edit.js';
 import { groupDisplayNames, resolveGroup, summarizeGroups } from '../model/groups.js';
 import { asNumber, isObject, parseModelText, rulesOf, sha256, type JsonObject } from '../model/json.js';
+import { assertAllowedByLittleSnitch } from '../model/permissions.js';
 import { activeProfile, resolveProfile } from '../model/profiles.js';
 import { ruleRef, semanticKey, summarizeRule, tolerantKey, type RuleSummary } from '../model/rules.js';
 import { compareModels, comparisonDetails, describeComparison, OPAQUE_RULE_ENTRIES } from '../model/verify.js';
@@ -121,6 +122,7 @@ function registerSwitchTools(server: McpServer, ctx: Context): void {
     },
     safely(async ({ profile }) => {
       const result = await switchVerified(ctx, 'set_active_profile', (before) => {
+        assertAllowedByLittleSnitch(before, ctx.uid, 'switch-profile');
         if (profile !== null) {
           resolveProfile(before, profile);
         }
@@ -169,6 +171,7 @@ function registerSwitchTools(server: McpServer, ctx: Context): void {
     safely(async ({ group, enabled }) => {
       let target: { id: string; name: string } | undefined;
       const result = await switchVerified(ctx, 'set_rule_group_enabled', (before) => {
+        assertAllowedByLittleSnitch(before, ctx.uid, 'edit-rules');
         // The group is looked up in the configuration as it is now, so the name sent to Little Snitch and the id checked afterwards belong together.
         const found = resolveGroup(before, group);
         if (found.name === null) {
@@ -260,6 +263,7 @@ function registerRuleTools(server: McpServer, ctx: Context): void {
       const outcome = await applyModelChange(
         ctx,
         (before) => {
+          assertAllowedByLittleSnitch(before, ctx.uid, 'edit-rules');
           const rule = buildRule(spec, { uid: ctx.uid, now: ctx.now(), model: before });
           // A rule of another macOS user with the same meaning is not a duplicate of this user's rule.
           const twin = rulesOf(before).find(
@@ -317,6 +321,7 @@ function registerRuleTools(server: McpServer, ctx: Context): void {
       const outcome = await applyModelChange(
         ctx,
         (before) => {
+          assertAllowedByLittleSnitch(before, ctx.uid, 'edit-rules');
           const updated = updateRule(before, args.ref, patch, ctx.now());
           // The prompt shows the rule as it will be. If its remotes do not fit, nobody could approve it knowingly.
           assertFitsPrompt(updated.after, true);
@@ -356,6 +361,7 @@ function registerRuleTools(server: McpServer, ctx: Context): void {
       const outcome = await applyModelChange(
         ctx,
         (before) => {
+          assertAllowedByLittleSnitch(before, ctx.uid, 'edit-rules');
           const { model: next, removed } = removeRule(before, args.ref);
           assertFitsPrompt(removed, true);
           removedSummary = summarize(removed, before);
@@ -415,6 +421,7 @@ function registerRestoreTool(server: McpServer, ctx: Context): void {
       }
       return ctx.changes.run(async () => {
         const { model: current, text: currentText } = await ctx.models.fresh();
+        assertAllowedByLittleSnitch(current, ctx.uid, 'edit-rules');
         const effect = effectOn(current);
         // Saving the copy from before must never remove the backup that is being restored.
         const safety = await ctx.store.writeBackup(currentText, 'before-restore_backup', [info.name]);

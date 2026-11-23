@@ -32,8 +32,8 @@ export function registerReadTools(server: McpServer, ctx: Context): void {
       inputSchema: {
         process: z.string().max(300).optional().describe('Keep rules whose process path (or "via" helper) contains this text, ignoring case. Example: "Safari".'),
         remote: z.string().max(300).optional().describe('Keep rules whose remote (domain, host, address or keyword like "local-net") contains this text.'),
-        action: z.enum(['allow', 'deny', 'ask']).optional().describe('Keep rules with this action.'),
-        direction: z.enum(['outgoing', 'incoming']).optional(),
+        action: z.enum(['allow', 'deny', 'ask', 'suggestion']).optional().describe('Keep rules with this action. "suggestion" is a rule Little Snitch proposes and that is not in force.'),
+        direction: z.enum(['outgoing', 'incoming', 'both']).optional(),
         group: z.string().max(200).optional().describe('Keep rules in this rule group, by group id or name.'),
         text: z.string().max(300).optional().describe('Keep rules whose process, remote, notes or group name contains this text.'),
         unused_for_days: z.number().int().min(1).max(3650).optional().describe('Keep rules not used for at least this many days, and rules never used.'),

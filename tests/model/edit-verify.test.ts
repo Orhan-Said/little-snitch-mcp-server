@@ -164,7 +164,7 @@ describe('compareModels', () => {
     const before = sampleModel();
     const { rule, next } = add(before);
     expect(compareModels(next, reexport(next), { written: [rule] })).toEqual({
-      ok: true, missing: [], unexpected: [], notApplied: [], notRemoved: [], changedSections: [], otherChanges: [],
+      ok: true, missing: [], unexpected: [], notApplied: [], notRemoved: [], changedSections: [], changedPreferenceKeys: [], otherChanges: [],
     });
   });
 
@@ -211,25 +211,49 @@ describe('compareModels', () => {
     const { rule, next } = add(before);
     const text = serializeModel(next);
     const preference = compareModels(next, parseModelText(text.replace('"allowCommandLineAccess":true', '"allowCommandLineAccess":false')), { written: [rule] });
-    expect(preference).toMatchObject({ ok: false, changedSections: ['globalDefaults'], missing: [], unexpected: [] });
-    const group = compareModels(next, parseModelText(text.replace('"kind":"builtinICloudServices","name":null,"isActive":false', '"kind":"builtinICloudServices","name":null,"isActive":true')), { written: [rule] });
+    expect(preference).toMatchObject({ ok: false, changedSections: ['globalDefaults'], changedPreferenceKeys: ['globalDefaults.allowCommandLineAccess'], missing: [], unexpected: [] });
+    const group = compareModels(next, parseModelText(text.replace('"type":"builtinICloudServices","isActive":false', '"type":"builtinICloudServices","isActive":true')), { written: [rule] });
     expect(group).toMatchObject({ ok: false, changedSections: ['groups'], otherChanges: ['The rule group "iCloud Services" is on and should be off.'] });
     const profile = compareModels(next, parseModelText(text.replace('"p1":{"name":"Home"},', '')), { written: [rule] });
     expect(profile).toMatchObject({ ok: false, changedSections: ['profiles'], otherChanges: ['The profile "Home" is gone.'] });
     const user = compareModels(next, parseModelText(text.replace('"activeProfile":"p2"', '"activeProfile":"p1"')), { written: [rule] });
     expect(user.changedSections).toEqual(['users']);
+    expect(user.changedPreferenceKeys).toEqual(['users[uid 501].defaults.activeProfile']);
     const added = compareModels(next, parseModelText(text.replace('"networkTriggers":[]', '"networkTriggers":[],"somethingNew":{"on":true}')), { written: [rule] });
     expect(added.changedSections).toEqual(['somethingNew']);
+  });
+
+  it('ignores the preference keys Little Snitch rewrites while it runs, and no others', () => {
+    const before = sampleModel();
+    const text = serializeModel(before);
+    const volatile = parseModelText(
+      text
+        .replace('"pidOfLSCShowingWelcomeWindow":0', '"pidOfLSCShowingWelcomeWindow":4711,"GeoViewMyLocationLatitude":40.4')
+        .replace('"ipAddressDatabaseLastUpdateCheck":816000000', '"ipAddressDatabaseLastUpdateCheck":816086400,"ipAddressDatabaseLastUpdateCheckFailed":false'),
+    );
+    expect(compareModels(before, volatile)).toMatchObject({ ok: true, changedSections: [], changedPreferenceKeys: [] });
+    const policy = compareModels(before, parseModelText(text.replace('"networkFilterEnabled":true', '"networkFilterEnabled":false')));
+    expect(policy).toMatchObject({ ok: false, changedSections: ['globalDefaults'], changedPreferenceKeys: ['globalDefaults.networkFilterEnabled'] });
+    expect(describeComparison(policy)).toBe('these parts differ: globalDefaults; preference keys that differ: globalDefaults.networkFilterEnabled');
+    const perUser = compareModels(before, parseModelText(text.replace('"markNewRulesAsUnapproved":false', '"markNewRulesAsUnapproved":true')));
+    expect(perUser.changedPreferenceKeys).toEqual(['users[uid 501].defaults.markNewRulesAsUnapproved']);
   });
 
   it('ignores only the parts Little Snitch keeps for itself', () => {
     const before = sampleModel();
     const after = parseModelText(
       serializeModel(before)
-        .replace('"bundleVersion":6500', '"bundleVersion":6501,"blocklistStatistics":{"hits":9},"lastSeenExecutableByCodeIdentifier":{"a":"b"}')
+        .replace('"bundleVersion":6500', '"bundleVersion":6501')
+        .replace('"blocklistStatistics":{}', '"blocklistStatistics":{"hits":9}')
+        .replace('"statisticsModelCreationDate":780000000', '"statisticsModelCreationDate":780000099')
+        .replace('"lastSeenExecutableByCodeIdentifier":{', '"lastSeenExecutableByCodeIdentifier":{"a":"b",')
         .replace('"factoryRuleSetVersion":12', '"factoryRuleSetVersion":13'),
     );
     expect(compareModels(before, after).ok).toBe(true);
+    // Sections that hold identity checks and other extensions are not among them.
+    for (const [from, to] of [['"codeRequirements":{}', '"codeRequirements":{"/x":"anchor apple"}'], ['"knownNEs":[]', '"knownNEs":["x"]'], ['"developerTeamNames":{}', '"developerTeamNames":{"T":"n"}']] as const) {
+      expect(compareModels(before, parseModelText(serializeModel(before).replace(from, to))).ok).toBe(false);
+    }
   });
 
   it('reports a rule that was lost, and one that was not removed', () => {

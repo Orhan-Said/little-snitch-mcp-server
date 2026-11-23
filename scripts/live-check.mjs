@@ -3,6 +3,7 @@
 //
 //   npm run build && npm run live-check              read-only checks, one approval
 //   npm run live-check -- --write                    also adds and removes one test rule, four more approvals
+//   npm run live-check -- --write-only               only the test rule, for when the read checks already ran
 //
 // It asks for your approval (Touch ID or the administrator password) the same way
 // the server does. The report it prints holds key names, counts and value formats
@@ -28,8 +29,9 @@ import { parseTraffic, formatTrafficDate } from '../dist/traffic.js';
 import { readStatus } from '../dist/tools/status.js';
 
 const argv = process.argv.slice(2);
-const doWrite = argv.includes('--write');
-const passThrough = argv.filter((arg) => arg !== '--write');
+const writeOnly = argv.includes('--write-only');
+const doWrite = writeOnly || argv.includes('--write');
+const passThrough = argv.filter((arg) => arg !== '--write' && arg !== '--write-only');
 const ENTRY = fileURLToPath(new URL('../dist/index.js', import.meta.url));
 const TEST_HOST = 'lsmcp-live-check.invalid';
 const TEST_PROCESS = '/usr/bin/false';
@@ -106,6 +108,10 @@ async function readChecks() {
     section('Status: FAILED', problem(error));
   }
 
+  if (writeOnly) {
+    return true;
+  }
+
   const restrictions = await execFile(config.cliPath, ['restrictions'], { timeoutMs: 15_000 });
   section('The "restrictions" command without root', {
     exit: restrictions.code,
@@ -173,11 +179,13 @@ function safeDetails(details) {
     configurationAsBefore: details.configurationAsBefore,
     cause: details.cause,
     changedSections: details.changedSections,
+    changedPreferenceKeys: details.changedPreferenceKeys,
+    otherChanges: Array.isArray(details.otherChanges) ? details.otherChanges.length : undefined,
     missing: rules(details.missing),
     unexpected: rules(details.unexpected),
     notApplied: rules(details.notApplied),
     notRemoved: rules(details.notRemoved),
-    afterUndo: details.afterUndo === undefined ? undefined : { changedSections: details.afterUndo.changedSections, missing: rules(details.afterUndo.missing), unexpected: rules(details.afterUndo.unexpected) },
+    afterUndo: details.afterUndo === undefined ? undefined : { changedSections: details.afterUndo.changedSections, changedPreferenceKeys: details.afterUndo.changedPreferenceKeys, missing: rules(details.afterUndo.missing), unexpected: rules(details.afterUndo.unexpected) },
   };
 }
 
@@ -229,9 +237,11 @@ async function writeCheck() {
 
 console.log(`# little-snitch-mcp-server live check (${path.basename(ENTRY)}, ${new Date().toISOString().slice(0, 10)})`);
 console.log(
-  doWrite
-    ? `Read checks (one approval), then one test rule (deny ${TEST_PROCESS} to ${TEST_HOST}) is added and removed (four approvals, or two with Touch ID for sudo).`
-    : 'Read-only: nothing in Little Snitch is changed. One approval.',
+  writeOnly
+    ? `One test rule (deny ${TEST_PROCESS} to ${TEST_HOST}) is added and removed: four approvals, or two with Touch ID for sudo.`
+    : doWrite
+      ? `Read checks (one approval), then one test rule (deny ${TEST_PROCESS} to ${TEST_HOST}) is added and removed (four approvals, or two with Touch ID for sudo).`
+      : 'Read-only: nothing in Little Snitch is changed. One approval.',
 );
 const readsWorked = await readChecks();
 if (doWrite && readsWorked) {

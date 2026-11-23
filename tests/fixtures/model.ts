@@ -2,9 +2,13 @@ import { parseModelText, type JsonObject } from '../../src/model/json.js';
 
 /**
  * A made-up Little Snitch configuration in the shape `littlesnitch export-model`
- * prints. The shape follows what the torsday/little-snitch-mcp project recorded
- * from Little Snitch 6.3.3 (dates as text) and its issue reports about 6.5
- * (last-used times as numbers). No real person's rules are in here.
+ * prints. The top-level sections, the rule fields, the rule groups ("type",
+ * "userProvidedName") and the preference keys follow a real Little Snitch 6.5
+ * configuration, of which only key names and value types were recorded
+ * (2026-11-23). The rule origin "frontend" and the profiles follow what the
+ * torsday/little-snitch-mcp project recorded from 6.3.3: that configuration
+ * had no rule made in the app's own window and no profile. No real person's
+ * rules are in here.
  */
 export const SAFARI = '/Applications/Safari.app/Contents/MacOS/Safari';
 export const SLACK = '/Applications/Slack.app/Contents/MacOS/Slack';
@@ -70,22 +74,28 @@ export function sampleModelText(options: SampleOptions = {}): string {
     }
   ],
   "groups": {
-    "aaaaab": { "kind": "builtinMacOSServices", "name": null, "isActive": true },
-    "aaaaac": { "kind": "builtinICloudServices", "name": null, "isActive": false },
-    "aaaaad": { "kind": "local", "name": "Work rules", "isActive": true },
-    "aaaaae": { "kind": "builtinSomethingNew", "name": null, "isActive": true }
+    "aaaaab": { "type": "builtinMacOSServices", "isActive": true, "updateInterval": 86400, "lastUpdateInvalidDomainsCount": 0 },
+    "aaaaac": { "type": "builtinICloudServices", "isActive": false, "updateInterval": 86400, "lastUpdateInvalidDomainsCount": 0 },
+    "aaaaad": { "type": "loadedFromFile", "userProvidedName": "Work rules", "isActive": true, "updateInterval": 86400, "lastUpdateInvalidDomainsCount": 0 },
+    "aaaaae": { "type": "builtinSomethingNew", "isActive": true, "updateInterval": 86400, "lastUpdateInvalidDomainsCount": 0 }
   },
   "profiles": {
     "p1": { "name": "Home" },
     "p2": { "name": "Work", "silentMode": 1.0 }
   },
-  "noProfilePseudoProfile": {},
-  "globalDefaults": { "allowCommandLineAccess": true },
+  "noProfilePseudoProfile": { "name": "Effective in all profiles" },
+  "globalDefaults": { "allowCommandLineAccess": true, "networkFilterEnabled": true, "activeSilentMode": 0, "ipAddressDatabaseLastUpdateCheck": 816000000 },
   "users": [
-    { "uid": 501, "shortName": "tester", "fullName": "Test User", "defaults": { "activeProfile": "p2" } }
+    { "uid": 501, "shortName": "tester", "fullName": "Test User", "defaults": { "activeProfile": "p2", "markNewRulesAsUnapproved": false, "pidOfLSCShowingWelcomeWindow": 0 } }
   ],
   "networkTriggers": [],
-  "disabledDomainsInLists": []
+  "disabledDomainsInLists": [],
+  "knownNEs": [],
+  "codeRequirements": {},
+  "developerTeamNames": {},
+  "lastSeenExecutableByCodeIdentifier": { "MLZF7K7B5R/at.obdev.littlesnitch": "/Applications/Little Snitch.app" },
+  "blocklistStatistics": {},
+  "statisticsModelCreationDate": 780000000
 }
 `;
 }

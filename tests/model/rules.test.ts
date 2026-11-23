@@ -173,12 +173,21 @@ describe('filterRules', () => {
 });
 
 describe('rule groups', () => {
-  it('lists every group with its name, state and number of rules', () => {
+  it('lists every group with its name, state and number of rules, as Little Snitch 6.5 writes them', () => {
+    const other = { updateInterval: 86400, lastUpdateInvalidDomainsCount: 0 };
     expect(summarizeGroups(sampleModel())).toEqual([
-      { id: 'aaaaab', name: 'macOS Services', nameSource: 'built-in table', kind: 'builtinMacOSServices', active: true, ruleCount: 1 },
-      { id: 'aaaaac', name: 'iCloud Services', nameSource: 'built-in table', kind: 'builtinICloudServices', active: false, ruleCount: 0 },
-      { id: 'aaaaad', name: 'Work rules', nameSource: 'configuration', kind: 'local', active: true, ruleCount: 1 },
-      { id: 'aaaaae', name: null, nameSource: 'unknown', kind: 'builtinSomethingNew', active: true, ruleCount: 0 },
+      { id: 'aaaaab', name: 'macOS Services', nameSource: 'built-in table', kind: 'builtinMacOSServices', active: true, ruleCount: 1, other },
+      { id: 'aaaaac', name: 'iCloud Services', nameSource: 'built-in table', kind: 'builtinICloudServices', active: false, ruleCount: 0, other },
+      { id: 'aaaaad', name: 'Work rules', nameSource: 'configuration', kind: 'loadedFromFile', active: true, ruleCount: 1, other },
+      { id: 'aaaaae', name: null, nameSource: 'unknown', kind: 'builtinSomethingNew', active: true, ruleCount: 0, other },
+    ]);
+  });
+
+  it('also reads the older spelling with "kind" and "name"', () => {
+    const older = parseModelText('{"groups":{"g1":{"kind":"builtinMacOSServices","name":null,"isActive":true},"g2":{"kind":"local","name":"Mine","isActive":false}}}');
+    expect(summarizeGroups(older)).toEqual([
+      { id: 'g1', name: 'macOS Services', nameSource: 'built-in table', kind: 'builtinMacOSServices', active: true, ruleCount: 0 },
+      { id: 'g2', name: 'Mine', nameSource: 'configuration', kind: 'local', active: false, ruleCount: 0 },
     ]);
   });
 

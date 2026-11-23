@@ -103,16 +103,41 @@ The same three models then reviewed the fixed code, this time in both rounds. Al
 
 At this point the reviewers' remaining objections are premises nobody can check without a real Little Snitch: whether the root script works under a real administrator dialog, whether the list of ignored sections and the rule match fit version 6.5, whether macOS shows a long prompt whole, and what a killed dialog leaves running. A third review cannot settle those. A run of `npm run live-check -- --write` can.
 
+## What a real configuration showed
+
+On 2026-11-23 the owner of a Mac with Little Snitch 6.5 ran `npm run live-check`. It was the first run with real privileges. The report holds key names, counts and formats only.
+
+What it confirmed:
+
+- The administrator dialog works with a real password, and three commands run under one approval with their outputs taken apart correctly. The configuration alone was about 530 KB.
+- `restrictions` without root tells whether terminal access is on.
+- The top-level sections are the ones the earlier project recorded, plus `knownNEs`.
+- Rule dates are ISO text. `lastUsed` is a number of seconds counted from 2001.
+- `remote-domains` is text or a list. `remote-hosts` and `remote-addresses` were text in every rule.
+- The traffic log has exactly the documented columns. Its dates are ISO text in UTC. A window given in local time returned rows, which fits the assumption that the tool reads its date arguments as local time.
+- The preference listing has one `key = value` per line.
+
+What it corrected:
+
+- Rule groups have no `kind` and no `name`. The kind is under `type`, and a name the person gave is under `userProvidedName`. The server reads both spellings now. Before this, every group on 6.5 would have shown without a name.
+- Rule actions also include `ask` and `suggestion`, and directions include `both`.
+- The per-user preferences hold keys that change while Little Snitch runs. Five of them are now left out of the comparison.
+- The owner's screenshot of Settings > Security showed Little Snitch's own switches for rule editing and profile switching. The server now reads them and refuses what is switched off.
+
+What it could not show:
+
+- No rule had the origin `frontend`, which the server writes for a new rule. The origins seen were `alert`, `expiredTemporary`, `factory`, `monitor`, `osUpdate`, `preLogin` and `unknown`.
+- No rule had notes, so the key `notes` is confirmed only by the `.lsrules` documentation.
+- There were no profiles, so their shape and the place of the active profile are still unknown.
+- Nothing was written. Whether `restore-model` takes a changed configuration as sent is the open question the write check answers.
+
 ## Open questions
 
-These need a run on a real install with terminal access on. `npm run live-check` prints the answers without any personal data.
+These need a run that changes something. `npm run live-check -- --write` adds and removes one test rule and reports what differed.
 
-- Which key holds the active profile.
-- What `restrictions` prints when terminal access is on.
-- The exact CSV that `log-traffic` prints on 6.5.
-- Whether a restore changes anything outside the rule list on its own, such as preferences or caches. The check after a change is strict, so every such part must either stay the same or be on the short list of parts Little Snitch keeps for itself (`LITTLE_SNITCH_OWNED_SECTIONS` in `src/model/verify.ts`). If that list is too short for 6.5, every rule change is undone and the error names the part.
+- Whether `restore-model` accepts a new rule with the origin `frontend` and a `notes` field, and returns it as sent.
+- Whether a restore changes anything outside the rule list on its own. The check after a change is strict, so every such part must either stay the same or be on one of two short lists in `src/model/verify.ts`: `LITTLE_SNITCH_OWNED_SECTIONS` and `VOLATILE_PREFERENCE_KEYS`. If a list is too short for 6.5, the change is undone and the error names the part or the key.
 - Whether Little Snitch respells a rule in a way `tolerantKey` in `src/model/rules.ts` does not expect.
+- Which key holds the active profile.
 - Whether macOS shows a prompt of about 1,000 characters whole in the administrator dialog.
 - Whether a command started by the administrator dialog keeps running when `osascript` is killed. Without administrator rights it does.
-- Whether `log-traffic` reads its dates as local time, which the server assumes.
-- Whether the rule shape from 6.3.3 is still accepted by `restore-model` on 6.5. `npm run live-check -- --write` tests it with one harmless rule.

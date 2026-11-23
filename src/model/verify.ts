@@ -1,5 +1,5 @@
 import { groupDisplayNames, summarizeGroups } from './groups.js';
-import { canonical, isObject, rawRules, rulesOf, type JsonObject } from './json.js';
+import { canonical, isObject, rawRules, rulesOf, without, type JsonObject, type JsonValue } from './json.js';
 import { summarizeProfiles } from './profiles.js';
 import { ruleRef, summarizeRule, tolerantKey, type RuleSummary } from './rules.js';
 
@@ -15,6 +15,21 @@ export const LITTLE_SNITCH_OWNED_SECTIONS = [
   'lastSeenExecutableByCodeIdentifier',
   'bundleVersion',
   'factoryRuleSetVersion',
+] as const;
+
+/**
+ * Preference keys that hold no policy and that Little Snitch rewrites while it
+ * runs: the process id of an open window, the time of its last address
+ * database check, the map position of the Network Monitor. They were chosen
+ * from their names in a real 6.5 configuration, not from watching them change.
+ * A difference in them alone is not a difference in the firewall.
+ */
+export const VOLATILE_PREFERENCE_KEYS = [
+  'pidOfLSCShowingWelcomeWindow',
+  'ipAddressDatabaseLastUpdateCheck',
+  'ipAddressDatabaseLastUpdateCheckFailed',
+  'GeoViewMyLocationLatitude',
+  'GeoViewMyLocationLongitude',
 ] as const;
 
 export interface CompareOptions {
@@ -41,6 +56,8 @@ export interface Comparison {
   readonly notRemoved: readonly RuleSummary[];
   /** Top-level parts other than the rule list that differ, by name: preferences, groups, profiles and so on. */
   readonly changedSections: readonly string[];
+  /** The preference keys that differ, by name and without their values, such as "globalDefaults.networkFilterEnabled". */
+  readonly changedPreferenceKeys: readonly string[];
   /** The group and profile differences in words, where they can be described. */
   readonly otherChanges: readonly string[];
 }
@@ -78,6 +95,43 @@ function describeGroupsAndProfiles(expected: JsonObject, actual: JsonObject): re
   return changes;
 }
 
+const dropVolatile = (preferences: JsonValue | undefined): JsonValue | undefined =>
+  isObject(preferences) ? without(preferences, VOLATILE_PREFERENCE_KEYS) : preferences;
+
+/** The configuration with the volatile preference keys taken out of the global and the per-user preferences. */
+function withoutVolatilePreferences(model: JsonObject): JsonObject {
+  const users = model['users'];
+  return {
+    ...model,
+    ...(model['globalDefaults'] === undefined ? {} : { globalDefaults: dropVolatile(model['globalDefaults']) ?? null }),
+    ...(Array.isArray(users) ? { users: users.map((user) => (isObject(user) ? { ...user, defaults: dropVolatile(user['defaults']) ?? null } : user)) } : {}),
+  };
+}
+
+function differingKeys(label: string, expected: JsonValue | undefined, actual: JsonValue | undefined): readonly string[] {
+  if (!isObject(expected) || !isObject(actual)) {
+    return canonical(expected) === canonical(actual) ? [] : [label];
+  }
+  return [...new Set([...Object.keys(expected), ...Object.keys(actual)])]
+    .sort()
+    .filter((key) => canonical(expected[key]) !== canonical(actual[key]))
+    .map((key) => `${label}.${key}`);
+}
+
+/** Names the preference keys that differ. Values are left out: they are the person's settings. */
+function changedPreferenceKeys(expected: JsonObject, actual: JsonObject): readonly string[] {
+  const userDefaults = (model: JsonObject): Map<string, JsonValue | undefined> => {
+    const users = model['users'];
+    return new Map((Array.isArray(users) ? users : []).filter(isObject).map((user) => [canonical(user['uid']), user['defaults']]));
+  };
+  const expectedUsers = userDefaults(expected);
+  const actualUsers = userDefaults(actual);
+  return [
+    ...differingKeys('globalDefaults', expected['globalDefaults'], actual['globalDefaults']),
+    ...[...new Set([...expectedUsers.keys(), ...actualUsers.keys()])].sort().flatMap((uid) => differingKeys(`users[uid ${uid}].defaults`, expectedUsers.get(uid), actualUsers.get(uid))),
+  ];
+}
+
 function changedSections(expected: JsonObject, actual: JsonObject): readonly string[] {
   const ignored: readonly string[] = ['rules', ...LITTLE_SNITCH_OWNED_SECTIONS];
   const keys = [...new Set([...Object.keys(expected), ...Object.keys(actual)])].filter((key) => !ignored.includes(key)).sort();
@@ -95,11 +149,14 @@ export const OPAQUE_RULE_ENTRIES = 'rules (entries that are not rule objects)';
  * Compares the configuration Little Snitch reports with the one that was
  * intended. The comparison is strict: a rule nobody asked for, a field of a
  * written rule that came back different, and any change to preferences, rule
- * groups or profiles all count as a difference. Only two things are ignored:
+ * groups or profiles all count as a difference. Only three things are ignored:
  * the fields Little Snitch updates as traffic flows (a rule's last use and use
- * count), and the sections listed in LITTLE_SNITCH_OWNED_SECTIONS.
+ * count), the sections listed in LITTLE_SNITCH_OWNED_SECTIONS, and the
+ * preference keys listed in VOLATILE_PREFERENCE_KEYS.
  */
-export function compareModels(expected: JsonObject, actual: JsonObject, options: CompareOptions = {}): Comparison {
+export function compareModels(expectedModel: JsonObject, actualModel: JsonObject, options: CompareOptions = {}): Comparison {
+  const expected = withoutVolatilePreferences(expectedModel);
+  const actual = withoutVolatilePreferences(actualModel);
   const written = new Set(options.written ?? []);
   const removed = new Set(options.removedRefs ?? []);
   const expectedNames = groupDisplayNames(expected);
@@ -149,6 +206,7 @@ export function compareModels(expected: JsonObject, actual: JsonObject, options:
     notApplied: notApplied.map((rule) => summarizeRule(rule, expectedNames)),
     notRemoved: notRemoved.map((rule) => summarizeRule(rule, actualNames)),
     changedSections: sections,
+    changedPreferenceKeys: changedPreferenceKeys(expected, actual),
     otherChanges: describeGroupsAndProfiles(expected, actual),
   };
 }
@@ -162,6 +220,7 @@ export function comparisonDetails(comparison: Comparison): Record<string, unknow
     notApplied: cut(comparison.notApplied),
     notRemoved: cut(comparison.notRemoved),
     changedSections: comparison.changedSections,
+    changedPreferenceKeys: comparison.changedPreferenceKeys,
     otherChanges: comparison.otherChanges,
   };
 }
@@ -174,6 +233,7 @@ export function describeComparison(comparison: Comparison): string {
     ...(comparison.notApplied.length > 0 ? [`${comparison.notApplied.length} written rule(s) not as sent`] : []),
     ...(comparison.notRemoved.length > 0 ? [`${comparison.notRemoved.length} rule(s) not removed`] : []),
     ...(comparison.changedSections.length > 0 ? [`these parts differ: ${comparison.changedSections.join(', ')}`] : []),
+    ...(comparison.changedPreferenceKeys.length > 0 ? [`preference keys that differ: ${comparison.changedPreferenceKeys.slice(0, 12).join(', ')}`] : []),
   ];
   return parts.length === 0 ? 'no difference' : parts.join('; ');
 }

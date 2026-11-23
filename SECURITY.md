@@ -13,6 +13,7 @@ The assistant is tricked. A web page, a document or a host name can carry text t
 - The server starts read-only. A tool you did not name with `--allow` is not registered, so the assistant cannot call it.
 - macOS asks you to approve each change in the administrator dialog. The prompt states the change, with the action and the remote first. Nothing the assistant reads can answer that prompt.
 - The server refuses a rule for any process and any remote, and refuses to touch protected and factory rules.
+- It respects Little Snitch's own switches "Allow Rule Editing" and "Allow Profile Switching". The command-line tool runs as root and ignores them; the server reads them from the configuration and refuses what you switched off.
 - It refuses paths and notes with invisible characters. A rule whose remote list does not fit into the prompt cannot be added, changed or removed, so the prompt cannot hide part of a change.
 - The prompt for a change to a rule ends with the rule as it will be afterwards.
 

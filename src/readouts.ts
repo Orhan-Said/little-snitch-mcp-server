@@ -7,7 +7,7 @@ export interface Preference {
 }
 
 /** Keys whose values are never shown: passwords, keys, licence data. */
-const SECRET_KEY = /pass(word|phrase)|secret|token|licen[cs]e|serial|encryption|credential|private|api[-_.]?key/i;
+const SECRET_KEY = /pass(word|phrase)|secret|token|licen[cs]e|serial|credential|private|(api|encryption)[-_.]?key/i;
 export const HIDDEN = '[hidden]';
 
 /**

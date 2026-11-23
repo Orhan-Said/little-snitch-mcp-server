@@ -90,6 +90,11 @@ describe('parsePreferences', () => {
     expect(preferences.map((entry) => entry.value)).toEqual(['[hidden]', '[hidden]', '[hidden]', '1']);
   });
 
+  it('does not hide a setting just because its name mentions encryption', () => {
+    const preferences = parsePreferences('  dnsEncryptionEnabled = false\n  dnsEncryptionConfigurations = (\n  )\n  backupEncryptionKey = abc\n');
+    expect(preferences.map((entry) => entry.value)).toEqual(['false', '(\n  )', '[hidden]']);
+  });
+
   it('ignores lines before the first key', () => {
     expect(parsePreferences('Preferences:\n  a = 1\n')).toEqual([{ key: 'a', value: '1' }]);
   });

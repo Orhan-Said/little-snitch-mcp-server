@@ -158,7 +158,7 @@ switch (command) {
   }
   case 'rulegroup': {
     const model = readModel();
-    const entry = Object.values(model.groups).find((group) => (group.name ?? BUILTIN_NAMES[group.kind]) === rest[1]);
+    const entry = Object.values(model.groups).find((group) => (group.userProvidedName ?? group.name ?? BUILTIN_NAMES[group.type ?? group.kind]) === rest[1]);
     if (entry === undefined || (rest[0] !== '--enable' && rest[0] !== '--disable')) {
       fail(1, `Rule group or blocklist "${rest[1]}" not found.`); // message recorded by torsday/little-snitch-mcp
     }

@@ -15,8 +15,9 @@ describe('parseModelText and serializeModel', () => {
     const model = parseModelText(sampleModelText());
     expect(rulesOf(model)).toHaveLength(4);
     expect(Object.keys(model).sort()).toEqual([
-      'bundleVersion', 'disabledDomainsInLists', 'factoryRuleSetVersion', 'globalDefaults', 'groups', 'networkTriggers',
-      'noProfilePseudoProfile', 'profiles', 'rules', 'users',
+      'blocklistStatistics', 'bundleVersion', 'codeRequirements', 'developerTeamNames', 'disabledDomainsInLists', 'factoryRuleSetVersion',
+      'globalDefaults', 'groups', 'knownNEs', 'lastSeenExecutableByCodeIdentifier', 'networkTriggers', 'noProfilePseudoProfile', 'profiles',
+      'rules', 'statisticsModelCreationDate', 'users',
     ]);
   });
 

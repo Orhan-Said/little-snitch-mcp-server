@@ -22,25 +22,27 @@ Read this before you rely on the server. Little Snitch's tool needs root and a s
 | Part | How it was checked |
 |---|---|
 | Finding the tool, reading its version, checking its code signature | On Little Snitch 6.5, macOS 26.6 |
-| Detecting that "Allow access via Terminal" is off | On Little Snitch 6.5 |
+| Detecting whether "Allow access via Terminal" is on or off | On Little Snitch 6.5, in both states |
 | Reading Little Snitch's own log (`get_log`) | On Little Snitch 6.5 |
-| Error messages when root access is not set up | On Little Snitch 6.5 |
-| The shell text for the administrator dialog, with its checked private copy | With `/bin/sh` and `osascript`, without the administrator step |
+| The administrator dialog with a real password, with three reads under one approval | On Little Snitch 6.5 |
+| Reading and parsing a real configuration of several hundred rules, the preference listing and the traffic history | On Little Snitch 6.5. Only key names, counts and formats were recorded. |
 | The lock that keeps two changes apart | With macOS `lockf`: twelve takers at once, and a holder that is killed |
-| Rules, groups, profiles, traffic, preferences, backups | Against the simulator in `tests/fixtures/fake-littlesnitch.mjs` |
-| Adding, changing and removing rules, with the check afterwards and the undo | Against the simulator |
-| The administrator dialog with a real password, and Touch ID for sudo | Not run |
+| The shell text for a restore, with its checked private copy | With `/bin/sh` and `osascript`, without the administrator step |
+| Listing and filtering rules, groups, traffic and preferences | Against the simulator in `tests/fixtures/fake-littlesnitch.mjs`, whose configuration has the shape of that real one |
+| Adding, changing and removing rules, switching groups and profiles, with the check afterwards and the undo | Against the simulator |
+| Profiles | Against the simulator only. The real configuration had none, so their shape comes from older notes. |
+| Touch ID for sudo | Not run |
 
-The simulator follows Objective Development's documentation and the configuration format that the [torsday/little-snitch-mcp](https://github.com/torsday/little-snitch-mcp) project recorded from Little Snitch 6.3.3. Where your Little Snitch differs, the server reports what it could not read. It does not guess.
+The simulator follows Objective Development's documentation, the shape of a real Little Snitch 6.5 configuration, and for what that configuration did not contain, the format that the [torsday/little-snitch-mcp](https://github.com/torsday/little-snitch-mcp) project recorded from Little Snitch 6.3.3. Where your Little Snitch differs, the server reports what it could not read. It does not guess.
 
-The check after a rule change is strict, and nobody has run it against a real Little Snitch yet. If Little Snitch rewrites something this project does not know about, the server will undo every rule change and tell you which part differed. You can find out on your own Mac in two minutes. See [Check it on your Mac](#check-it-on-your-mac).
+The check after a change is strict, and no change has been made to a real Little Snitch yet. If Little Snitch rewrites something this project does not know about, the server will undo every change and tell you which part differed, down to the name of the preference key. You can find out on your own Mac in two minutes. See [Check it on your Mac](#check-it-on-your-mac).
 
 ## Requirements
 
 - macOS with Little Snitch 6. The server was built against version 6.5.
 - Node.js 20 or newer.
 - An administrator account on the Mac.
-- In Little Snitch, Settings > Security > "Allow access via Terminal" switched on. Little Snitch keeps this off by default, because its command-line tool can change the firewall. Switch it on only if you want to use this server.
+- In Little Snitch, open Settings, go to Security, and switch on "Allow access via Terminal" in the group "Other". Little Snitch keeps this off by default, because its command-line tool can change the firewall. Switch it on only if you want to use this server.
 
 ## Install
 
@@ -152,7 +154,7 @@ Little Snitch has no command to edit one rule. Its documented route for automati
 5. It compares the whole configuration with the one it intended. A rule nobody asked for, a field of the new rule that came back different, and any change to preferences, rule groups or profiles count as a difference.
 6. If there is a difference, it restores the configuration it read in step 1, compares again, and reports the failure. If that fails too, the error gives you the command to restore the backup by hand, with the checksum the backup file must have.
 
-The comparison ignores two things. One is what Little Snitch updates as traffic flows: a rule's last use and use count. The other is what Little Snitch keeps for itself: its statistics, its list of programs it has seen, and its version markers. For the rule just written, its dates and a few spellings may also differ, for example `tcp` and `6`.
+The comparison ignores three things. One is what Little Snitch updates as traffic flows: a rule's last use and use count. The second is what Little Snitch keeps for itself: its statistics, its list of programs it has seen, and its version markers. The third is five preference keys that hold no policy and change while Little Snitch runs, such as the process id of its open window (`VOLATILE_PREFERENCE_KEYS` in `src/model/verify.ts`). For the rule just written, its dates and a few spellings may also differ, for example `tcp` and `6`.
 
 If the read-back fails, the server reads the configuration again and undoes the change when it differs from before.
 
@@ -174,6 +176,7 @@ An assistant that can change a firewall deserves suspicion. The server takes the
 - It passes arguments to the tool as a list, with no shell in between. The administrator dialog is the one place that needs a shell string. There, the server quotes every word and hands the string to AppleScript as an argument.
 - It refuses a rule for any process and any remote, which would switch the firewall off or cut the Mac off from the network.
 - It refuses to change or remove protected rules and factory rules.
+- It respects Little Snitch's own switches under Settings > Security. With "Allow Rule Editing" off for your user, it changes no rule, rule group or blocklist. With "Allow Profile Switching" off, it switches no profile. The command-line tool itself would not be held back by these.
 - It matches profile and group names exactly, including letter case, so a typo cannot switch a different one.
 - It keeps backups and a change log (`changes.log`) in a folder only your macOS user can read.
 
@@ -188,7 +191,7 @@ The server tells the assistant that process paths, host names and rule notes are
 - Where Little Snitch keeps the active profile is not documented. If the server does not find it in the configuration, it cannot confirm a profile switch. It then answers "accepted", lists what else changed, and leaves the check to you.
 - The lock is per macOS user. Two different macOS users who change Little Snitch at the same moment are not kept apart.
 - New rules apply in all profiles. The server cannot put a rule into one profile or create a disabled rule, because the fields for that are not confirmed yet.
-- Built-in rule groups have no name in the configuration. The server knows the English names of two of them ("macOS Services", "iCloud Services"). It shows other built-in groups but cannot switch them.
+- Built-in rule groups have no name in the configuration. The server knows the English names of two of them ("macOS Services", "iCloud Services"). A group or blocklist you named yourself is found by that name. The server shows other groups but cannot switch them.
 - The server cannot answer connection alerts, create profiles, subscribe to blocklists, change preferences or capture packets.
 - Little Snitch 5 and older are untested.
 
@@ -206,7 +209,7 @@ This runs the read-only parts against your Little Snitch and asks for your appro
 npm run live-check -- --write
 ```
 
-This also adds one deny rule for `/usr/bin/false` to `lsmcp-live-check.invalid`, reads it back and removes it again. It is the quickest way to learn whether rule editing works with your version of Little Snitch.
+This also adds one deny rule for `/usr/bin/false` to `lsmcp-live-check.invalid`, reads it back and removes it again. It is the quickest way to learn whether rule editing works with your version of Little Snitch. Make a backup in Little Snitch first, with File > Create Backup. With `--write-only` in place of `--write`, the read checks are left out.
 
 If either run fails, please open an issue with the report.
 
@@ -225,7 +228,7 @@ A flag wins over its environment variable. The server stops at startup if it doe
 ## Development
 
 ```bash
-npm test               # 302 tests, about 30 seconds
+npm test               # 310 tests, about 30 seconds
 npm run typecheck
 npm run test:coverage
 ```

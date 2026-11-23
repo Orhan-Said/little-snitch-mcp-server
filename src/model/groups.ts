@@ -5,6 +5,11 @@ import { asBoolean, asString, isObject, rulesOf, toPlain, type JsonObject } from
  * Built-in rule groups carry no name in the configuration, only a kind, while
  * `littlesnitch rulegroup` accepts only the name shown in the app. This table
  * holds the English names seen so far; a kind missing from it is reported, not guessed.
+ *
+ * Little Snitch 6.5 writes the kind under the key "type" and a name the person
+ * gave under "userProvidedName" (seen in a real configuration on 2026-11-23).
+ * The keys "kind" and "name" are what the torsday/little-snitch-mcp project
+ * recorded from 6.3.3. Both spellings are read.
  */
 export const BUILTIN_GROUP_NAMES: Readonly<Record<string, string>> = {
   builtinMacOSServices: 'macOS Services',
@@ -22,7 +27,7 @@ export interface GroupSummary {
   readonly other?: Readonly<Record<string, unknown>>;
 }
 
-const KNOWN_KEYS = ['name', 'kind', 'isActive'];
+const KNOWN_KEYS = ['name', 'userProvidedName', 'kind', 'type', 'isActive'];
 
 export function summarizeGroups(model: JsonObject): readonly GroupSummary[] {
   const groups = model['groups'];
@@ -40,8 +45,8 @@ export function summarizeGroups(model: JsonObject): readonly GroupSummary[] {
     if (!isObject(value)) {
       return [];
     }
-    const kind = asString(value['kind']) ?? null;
-    const ownName = asString(value['name']);
+    const kind = asString(value['kind']) ?? asString(value['type']) ?? null;
+    const ownName = asString(value['userProvidedName']) ?? asString(value['name']);
     const builtin = kind === null ? undefined : BUILTIN_GROUP_NAMES[kind];
     const otherEntries = Object.entries(value).filter(([key]) => !KNOWN_KEYS.includes(key));
     const summary: GroupSummary = {

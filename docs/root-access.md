@@ -1,6 +1,6 @@
 # Root access
 
-`littlesnitch`, the command-line tool inside Little Snitch, refuses almost every command unless it runs as root. On Little Snitch 6.5 it prints `littlesnitch must be run as root!` and exits with code 14. Only `--version`, `log` and the check for "Allow access via Terminal" work without root.
+`littlesnitch`, the command-line tool inside Little Snitch, refuses almost every command unless it runs as root. On Little Snitch 6.5 it prints `littlesnitch must be run as root!` and exits with code 14. Only `--version`, `log` and `restrictions` work without root. The server uses `restrictions` to tell whether "Allow access via Terminal" is on: with the setting off it prints "command line tool is not authorized" and exits with 1, with the setting on it exits with 0. Both were seen on Little Snitch 6.5.
 
 An MCP client starts this server without a terminal. `sudo` then has nowhere to ask for a password and fails with `sudo: a terminal is required to read the password`. The server needs another way to get your approval.
 

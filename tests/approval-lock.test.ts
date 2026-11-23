@@ -47,6 +47,12 @@ describe('ruleText and the prompts', () => {
     expect(ruleText({ action: 'allow', process: SLACK, remote: 'any' })).toBe(`ALLOW connections to ANY remote for ${SLACK}`);
   });
 
+  it('words a rule for both directions and one for any signed process', () => {
+    expect(ruleText({ action: 'allow', process: SLACK, remote: 'local-net', direction: 'both' })).toBe(`ALLOW connections in both directions with the "local-net" remotes for ${SLACK}`);
+    expect(ruleText({ action: 'allow', requiresTrustedSignatureForAnyProcess: true, remote: 'any' })).toBe('ALLOW connections to ANY remote for ANY process with a trusted signature');
+    expect(ruleText({ action: 'deny', remote: 'any' })).toBe('DENY connections to ANY remote for an unspecified process');
+  });
+
   it('still shows the whole remote when the process path is very long', () => {
     const rule = { action: 'allow', process: `/Applications/${'A'.repeat(400)}/Contents/MacOS/Tool`, 'remote-hosts': ['evil-tracker.example', 'second.example'] };
     const prompt = prompts.add(rule);

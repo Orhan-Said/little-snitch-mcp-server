@@ -98,7 +98,9 @@ describe('set_active_profile', () => {
     const h = await start({ switchSideEffects: ['drop-first-rule'] });
     const { data } = await h.call('set_active_profile', { profile: 'Home' });
     expect(data.error.kind).toBe('verification-failed');
-    expect(data.error.message).toContain('is not what the switch should produce (1 rule(s) missing; these parts differ: users)');
+    expect(data.error.message).toContain(
+      'is not what the switch should produce (1 rule(s) missing; these parts differ: users; preference keys that differ: users[uid 501].defaults.activeProfile)',
+    );
     expect(data.error.message).toContain('The earlier configuration was put back and checked');
     expect(data.error.details).toMatchObject({ rolledBack: true, configurationAsBefore: true });
     expect(commands(h)).toEqual(['export-model', 'profile', 'export-model', 'restore-model', 'export-model']);
@@ -115,6 +117,26 @@ describe('set_active_profile', () => {
     expect(data.error.details).toMatchObject({ rolledBack: true, configurationAsBefore: true });
     expect(commands(h)).toEqual(['export-model', 'profile', 'export-model', 'export-model', 'restore-model', 'export-model']);
     expect(active(h)).toBe('Work');
+  });
+});
+
+describe('what the owner switched off in Little Snitch itself', () => {
+  const locked = (key: string): string => sampleModelText().replace('"markNewRulesAsUnapproved": false', `"markNewRulesAsUnapproved": false, "${key}": false`);
+
+  it('does not switch a profile when "Allow Profile Switching" is off', async () => {
+    const h = await start({ modelText: locked('allowProfileSwitching') });
+    const { data } = await h.call('set_active_profile', { profile: 'Home' });
+    expect(data.error.kind).toBe('capability-disabled');
+    expect(data.error.message).toBe('In Little Snitch, "Allow Profile Switching" is switched off for this user, so this server does not switch profiles either.');
+    expect(h.calls()).toEqual([['export-model']]);
+  });
+
+  it('does not switch a rule group when "Allow Rule Editing" is off, and still switches a profile', async () => {
+    const h = await start({ modelText: locked('allowRuleAndProfileEditing') });
+    const group = await h.call('set_rule_group_enabled', { group: 'iCloud Services', enabled: true });
+    expect(group.data.error.kind).toBe('capability-disabled');
+    expect(group.data.error.remedy).toContain('Settings > Security');
+    expect((await h.call('set_active_profile', { profile: 'Home' })).data.applied).toBe(true);
   });
 });
 
@@ -158,7 +180,7 @@ describe('set_rule_group_enabled', () => {
   });
 
   it('refuses a name that two groups share, since Little Snitch takes a name only', async () => {
-    const h = await start({ modelText: sampleModelText().replace('"kind": "builtinSomethingNew", "name": null', '"kind": "local", "name": "Work rules"') });
+    const h = await start({ modelText: sampleModelText().replace('"type": "builtinSomethingNew"', '"type": "loadedFromFile", "userProvidedName": "Work rules"') });
     const { data } = await h.call('set_rule_group_enabled', { group: 'aaaaad', enabled: false });
     expect(data.error.kind).toBe('ambiguous');
     expect(h.calls()).toEqual([['export-model']]);

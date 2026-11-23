@@ -439,6 +439,31 @@ describe('remove_rule and restore_backup', () => {
   });
 });
 
+describe('what the owner switched off in Little Snitch itself', () => {
+  it('does not add, change, remove or restore when "Allow Rule Editing" is off for this user', async () => {
+    const h = await start({ modelText: sampleModelText().replace('"markNewRulesAsUnapproved": false', '"markNewRulesAsUnapproved": false, "allowRuleAndProfileEditing": false') });
+    const refsNow = rulesOf(h.model()).map(ruleRef);
+    for (const [tool, args] of [
+      ['add_rule', NEW_RULE],
+      ['update_rule', { ref: refsNow[0], action: 'deny' }],
+      ['remove_rule', { ref: refsNow[0] }],
+    ] as const) {
+      const { data } = await h.call(tool, args);
+      expect(data.error.kind).toBe('capability-disabled');
+      expect(data.error.message).toContain('"Allow Rule Editing" is switched off');
+    }
+    expect(commands(h)).toEqual(['export-model', 'export-model', 'export-model']);
+    expect(rulesOf(h.model()).map(ruleRef)).toEqual(refsNow);
+  });
+
+  it('is not held back by the switch of another macOS user', async () => {
+    const h = await start({
+      modelText: sampleModelText().replace('"users": [', '"users": [\n    { "uid": 502, "shortName": "other", "fullName": "Other", "defaults": { "allowRuleAndProfileEditing": false } },'),
+    });
+    expect((await h.call('add_rule', NEW_RULE)).data.applied).toBe(true);
+  });
+});
+
 describe('rules of other macOS users', () => {
   it('does not treat another user\'s rule with the same meaning as a duplicate', async () => {
     const h = await start({ modelText: sampleModelText().replace('"uid": 501,\n      "process": "/Applications/Safari.app', '"uid": 502,\n      "process": "/Applications/Safari.app') });

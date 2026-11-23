@@ -70,7 +70,8 @@ export function remoteText(rule: JsonObject): { readonly text: string; readonly 
  */
 export function ruleText(rule: JsonObject, viewerUid?: number): string {
   const action = (asString(rule['action']) ?? 'unknown action').toUpperCase();
-  const direction = asString(rule['direction']) === 'incoming' ? 'incoming connections from' : 'connections to';
+  const way = asString(rule['direction']);
+  const direction = way === 'incoming' ? 'incoming connections from' : way === 'both' ? 'connections in both directions with' : 'connections to';
   const process = asString(rule['process']);
   const via = asString(rule['via']);
   const ports = asString(rule['ports']);
@@ -84,7 +85,7 @@ export function ruleText(rule: JsonObject, viewerUid?: number): string {
   const uid = asNumber(rule['uid']);
   return (
     `${shown(action, 20)} ${direction} ${remoteText(rule).text} ` +
-    `for ${process === 'any' ? 'ANY process' : process === undefined ? 'an unspecified process' : shown(process)}` +
+    `for ${process === 'any' ? 'ANY process' : process !== undefined ? shown(process) : rule['requiresTrustedSignatureForAnyProcess'] === true ? 'ANY process with a trusted signature' : 'an unspecified process'}` +
     (via === undefined ? '' : ` via ${shown(via)}`) +
     (extras.length === 0 ? '' : ` (${extras.join(', ')})`) +
     (uid === undefined || viewerUid === undefined || uid === viewerUid ? '' : `, a rule of macOS user ${uid}`) +
