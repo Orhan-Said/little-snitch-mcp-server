@@ -165,7 +165,8 @@ describe('set_active_profile', () => {
 });
 
 describe('what the owner switched off in Little Snitch itself', () => {
-  const locked = (key: string, value = 'false'): string => sampleModelText().replace(`"${key}": true`, `"${key}": ${value}`);
+  // Little Snitch 6.5 writes these switches as numbers. "Off" is taken to be 0; other forms are covered below.
+  const locked = (key: string, value = '0'): string => sampleModelText().replace(`"${key}": 1`, `"${key}": ${value}`);
 
   it('does not switch a profile when "Allow Profile Switching" is off', async () => {
     const h = await start({ modelText: locked('allowProfileSwitching') });
@@ -183,10 +184,10 @@ describe('what the owner switched off in Little Snitch itself', () => {
     expect((await h.call('set_active_profile', { profile: 'Home' })).data.applied).toBe(true);
   });
 
-  it('takes a 0 for "off", and refuses a value it does not understand', async () => {
-    const zero = await start({ modelText: locked('allowProfileSwitching', '0') });
-    expect((await zero.call('set_active_profile', { profile: 'Home' })).data.error.message).toContain('"Allow Profile Switching" is switched off');
-    await zero.close();
+  it('takes a false for "off" as well, and refuses a value it does not understand', async () => {
+    const plain = await start({ modelText: locked('allowProfileSwitching', 'false') });
+    expect((await plain.call('set_active_profile', { profile: 'Home' })).data.error.message).toContain('"Allow Profile Switching" is switched off');
+    await plain.close();
     const odd = await start({ modelText: locked('allowProfileSwitching', '"sometimes"') });
     const { data } = await odd.call('set_active_profile', { profile: 'Home' });
     expect(data.error.kind).toBe('capability-disabled');
@@ -195,7 +196,7 @@ describe('what the owner switched off in Little Snitch itself', () => {
   });
 
   it('switches when the switch is not in the configuration, and says in the result that it could not respect it', async () => {
-    const h = await start({ modelText: sampleModelText().replace('"allowRuleAndProfileEditing": true, "allowProfileSwitching": true, ', '') });
+    const h = await start({ modelText: sampleModelText().replace('"allowRuleAndProfileEditing": 1, "allowProfileSwitching": 1, ', '') });
     const profile = await h.call('set_active_profile', { profile: 'Home' });
     expect(profile.data.applied).toBe(true);
     expect(profile.data.warnings).toEqual([expect.stringContaining('"Allow Profile Switching" was not found in the configuration for this user')]);

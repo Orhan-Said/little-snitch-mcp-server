@@ -9,9 +9,11 @@ import { isObject, toPlain, type JsonObject, type JsonValue } from './json.js';
  * owner switched off in Little Snitch, it does not do through the back door.
  *
  * This is a courtesy, not a security boundary. The preference keys are matched
- * to the switches by their names, as seen in one real 6.5 configuration; how
- * other versions store them is not known. So the answer has four values, and
- * only a switch that was found and reads as "on" counts as on:
+ * to the switches by their names, as seen in one real 6.5 configuration. There
+ * both were numbers and read as "on" while switched on (2026-11-23); a switch
+ * that is off was not seen, and how other versions store them is not known.
+ * So yes and no are read in every common form, the answer has four values,
+ * and only a switch that was found and reads as "on" counts as on:
  *
  * - "on": the key is there with a value that means yes.
  * - "off": the key is there with a value that means no. The change is refused.

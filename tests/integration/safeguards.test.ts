@@ -99,10 +99,11 @@ describe('a change whose command does not end in time', () => {
 });
 
 describe('what the owner switched off in Little Snitch itself', () => {
-  const editing = (value: string): string => sampleModelText().replace('"allowRuleAndProfileEditing": true', `"allowRuleAndProfileEditing": ${value}`);
+  // Little Snitch 6.5 writes the switch as a number, 1 for on.
+  const editing = (value: string): string => sampleModelText().replace('"allowRuleAndProfileEditing": 1', `"allowRuleAndProfileEditing": ${value}`);
 
   it('does not add, change, remove or restore when "Allow Rule Editing" is off for this user', async () => {
-    const h = await start({ modelText: editing('false') });
+    const h = await start({ modelText: editing('0') });
     const refsNow = refs(h);
     const backup = (await h.call('create_backup', {})).data.backup.name as string;
     for (const [tool, args] of [
@@ -119,10 +120,10 @@ describe('what the owner switched off in Little Snitch itself', () => {
     expect(refs(h)).toEqual(refsNow);
   });
 
-  it('takes a 0 for "off" as well, and refuses a value it does not understand', async () => {
-    const zero = await start({ modelText: editing('0') });
-    expect((await zero.call('add_rule', NEW_RULE)).data.error.message).toContain('"Allow Rule Editing" is switched off');
-    await zero.close();
+  it('takes a false for "off" as well, and refuses a value it does not understand', async () => {
+    const plain = await start({ modelText: editing('false') });
+    expect((await plain.call('add_rule', NEW_RULE)).data.error.message).toContain('"Allow Rule Editing" is switched off');
+    await plain.close();
     const odd = await start({ modelText: editing('{"sometimes": true}') });
     const { data } = await odd.call('add_rule', NEW_RULE);
     expect(data.error.kind).toBe('capability-disabled');
@@ -131,7 +132,7 @@ describe('what the owner switched off in Little Snitch itself', () => {
   });
 
   it('makes the change when the switch is not in the configuration, and says in the result that it could not respect it', async () => {
-    const h = await start({ modelText: sampleModelText().replace('"allowRuleAndProfileEditing": true, ', '') });
+    const h = await start({ modelText: sampleModelText().replace('"allowRuleAndProfileEditing": 1, ', '') });
     const { data } = await h.call('add_rule', NEW_RULE);
     expect(data.applied).toBe(true);
     expect(data.warnings).toEqual([
