@@ -1,26 +1,37 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { applyModelChange, failAfterWrite, NOT_LOGGED, recoveryDetails, restoreVerified, undo, type RecoveryRequest } from '../apply.js';
+import { applyModelChange, failAfterWrite, NOT_LOGGED, recoveryDetails, requireLock, restoreText, undo, type RecoveryRequest } from '../apply.js';
 import { assertFitsPrompt, describeChanges, prompts, ruleText, shown } from '../approval.js';
 import type { ChangeResult } from '../cli/littlesnitch.js';
 import type { Context } from '../context.js';
 import { LittleSnitchError } from '../errors.js';
 import { addRule, buildRule, removeRule, SPECIAL_REMOTES, updateRule, validateNewRule, type NewRuleSpec, type RulePatch } from '../model/edit.js';
 import { groupDisplayNames, resolveGroup, summarizeGroups } from '../model/groups.js';
-import { asNumber, isObject, parseModelText, rulesOf, sha256, type JsonObject } from '../model/json.js';
+import { asNumber, isObject, parseModelText, rulesOf, type JsonObject } from '../model/json.js';
 import { assertAllowedByLittleSnitch } from '../model/permissions.js';
-import { activeProfile, resolveProfile } from '../model/profiles.js';
+import { activeProfile, resolveProfile, withoutActiveProfile } from '../model/profiles.js';
 import { ruleRef, semanticKey, summarizeRule, tolerantKey, type RuleSummary } from '../model/rules.js';
-import { compareModels, comparisonDetails, describeComparison, OPAQUE_RULE_ENTRIES } from '../model/verify.js';
+import { compareModels, comparisonDetails, describeComparison } from '../model/verify.js';
 import { safely } from './shared.js';
 
 const REF = z.string().regex(/^r[0-9a-f]{12}$/, 'A rule reference looks like r1a2b3c4d5e6f, as list_rules shows it.');
 const DRY_RUN = z.boolean().optional().describe('When true, nothing is changed: the result shows what would happen.');
 const APPROVAL =
   'The person at the Mac approves each change in the macOS administrator dialog, which states the change, unless they switched that off. ' +
-  'Afterwards the whole configuration is read back and compared; if anything differs from what was intended, the change is undone.';
+  'Afterwards the configuration is read back and every rule, rule group, profile and preference is compared; if anything differs from what was intended, the change is undone. ' +
+  'In the result, rewrittenByLittleSnitch names bookkeeping sections Little Snitch changed by itself, which are not compared, and warnings lists anything the person should know.';
 
-const warned = (warnings: readonly string[]): { warnings?: readonly string[] } => (warnings.length === 0 ? {} : { warnings });
+const one = (warning: string | undefined): readonly string[] => (warning === undefined ? [] : [warning]);
+
+/**
+ * What every result of a change says besides its own fields: the bookkeeping
+ * parts Little Snitch rewrote by itself, which are not compared, and anything
+ * that went wrong on the side.
+ */
+const sideNotes = (outcome: { readonly warnings: readonly string[]; readonly rewrittenByLittleSnitch: readonly string[] }): Record<string, unknown> => ({
+  ...(outcome.rewrittenByLittleSnitch.length === 0 ? {} : { rewrittenByLittleSnitch: outcome.rewrittenByLittleSnitch }),
+  ...(outcome.warnings.length === 0 ? {} : { warnings: outcome.warnings }),
+});
 
 function summarize(rule: JsonObject, model: JsonObject): RuleSummary {
   return summarizeRule(rule, groupDisplayNames(model));
@@ -38,8 +49,15 @@ interface SwitchPlan {
   readonly run: () => Promise<ChangeResult>;
   /** The whole configuration as it must be afterwards, when the switch's effect can be written down exactly. */
   readonly expected?: JsonObject;
-  /** For a switch whose place in the configuration is not known: true or false when the configuration tells, null when it does not. */
+  /**
+   * For a switch whose place in the configuration is not known for certain:
+   * takes that place out of a configuration, so that everything else can be
+   * compared with how it was before.
+   */
+  readonly apartFrom?: (model: JsonObject) => JsonObject;
+  /** With `apartFrom`: true or false when the configuration tells whether the switch took effect, null when it does not. */
   readonly confirm?: (after: JsonObject) => boolean | null;
+  readonly warnings?: readonly string[];
 }
 
 interface SwitchResult {
@@ -48,17 +66,21 @@ interface SwitchResult {
   readonly confirmed: boolean;
   /** Parts of the configuration other than the rule list that differ from before. */
   readonly partsThatChanged: readonly string[];
+  readonly rewrittenByLittleSnitch: readonly string[];
   readonly warnings: readonly string[];
 }
 
 const SWITCH_APPROVAL =
   'The person at the Mac approves the switch in the macOS administrator dialog, unless they switched that off. ' +
-  'A backup is saved first; if the configuration afterwards is not what the switch should produce, the earlier configuration is restored.';
+  'A backup is saved first; if anything other than the switch itself differs afterwards, the earlier configuration is restored.';
 
 /**
  * Runs a profile or rule group switch the way a rule change runs: one at a
  * time, from a configuration read at that moment, with a backup, a check of
- * the result, and an undo when the result is wrong.
+ * the result, and an undo when the result is wrong. The check is strict: a
+ * switch changes its own place in the configuration and nothing else, so a
+ * rule, another group, a preference or a profile that differs afterwards
+ * means the earlier configuration is put back.
  */
 function switchVerified(ctx: Context, tool: string, plan: (before: JsonObject) => SwitchPlan | 'already'): Promise<SwitchResult | 'already'> {
   return ctx.changes.run(async () => {
@@ -69,6 +91,7 @@ function switchVerified(ctx: Context, tool: string, plan: (before: JsonObject) =
     }
     const backup = await ctx.store.writeBackup(beforeText, `before-${tool}`);
     const request: RecoveryRequest = { tool, summary: planned.summary, before, beforeText, backup };
+    await requireLock(ctx, request);
     let result: ChangeResult;
     let after: JsonObject;
     try {
@@ -80,17 +103,23 @@ function switchVerified(ctx: Context, tool: string, plan: (before: JsonObject) =
     }
 
     const sinceBefore = compareModels(before, after);
-    const exact = planned.expected === undefined ? undefined : compareModels(planned.expected, after);
-    const confirmed = exact === undefined ? (planned.confirm?.(after) ?? null) : exact.ok;
-    // Whatever the switch is, it must never add, remove or alter a rule.
-    const rulesTouched = sinceBefore.missing.length > 0 || sinceBefore.unexpected.length > 0 || sinceBefore.changedSections.includes(OPAQUE_RULE_ENTRIES);
-    const wrong = confirmed === false || rulesTouched;
-    if (!wrong) {
+    const apart = planned.apartFrom ?? ((model: JsonObject): JsonObject => model);
+    const check = planned.expected === undefined ? compareModels(apart(before), apart(after)) : compareModels(planned.expected, after);
+    const confirmed = planned.expected === undefined ? (planned.confirm?.(after) ?? null) : check.ok;
+    if (check.ok && confirmed !== false) {
       ctx.models.put(after);
-      const logged = await ctx.store.audit({ tool, summary: planned.summary, outcome: 'applied', method: result.method, backup: backup.name });
-      return { method: result.method, confirmed: confirmed === true, partsThatChanged: sinceBefore.changedSections, warnings: logged ? [] : [NOT_LOGGED] };
+      // "accepted" is for a switch the configuration does not show: Little Snitch took it, and nothing else changed.
+      const logged = await ctx.store.audit({ tool, summary: planned.summary, outcome: confirmed === true ? 'applied' : 'accepted', method: result.method, backup: backup.name });
+      return {
+        method: result.method,
+        confirmed: confirmed === true,
+        partsThatChanged: sinceBefore.changedSections,
+        rewrittenByLittleSnitch: sinceBefore.rewrittenByLittleSnitch,
+        warnings: [...(planned.warnings ?? []), ...(logged ? [] : [NOT_LOGGED])],
+      };
     }
-    const problem = comparisonDetails(exact ?? sinceBefore);
+    const difference = check.ok ? sinceBefore : check;
+    const problem = comparisonDetails(difference);
     if (sinceBefore.ok) {
       await ctx.store.audit({ tool, summary: planned.summary, outcome: 'failed', method: result.method, backup: backup.name, detail: 'accepted, nothing changed' });
       throw new LittleSnitchError('verification-failed', 'Little Snitch accepted the request, but the configuration is the same as before. Nothing needs to be undone.', {
@@ -100,7 +129,7 @@ function switchVerified(ctx: Context, tool: string, plan: (before: JsonObject) =
     const recovery = await undo(ctx, request);
     throw new LittleSnitchError(
       'verification-failed',
-      `Little Snitch accepted the request, but the configuration afterwards is not what the switch should produce (${describeComparison(exact ?? sinceBefore)}). ${recovery.sentence}`,
+      `Little Snitch accepted the request, but the configuration afterwards is not what the switch should produce (${describeComparison(difference)}). ${recovery.sentence}`,
       { details: recoveryDetails(request, recovery, problem) },
     );
   });
@@ -114,7 +143,7 @@ function registerSwitchTools(server: McpServer, ctx: Context): void {
       description:
         'Activate a Little Snitch profile by its exact name, or deactivate all profiles. A profile changes which rules apply, so it can loosen or tighten the firewall; ' +
         `say which profile you are switching to and why before calling. ${SWITCH_APPROVAL} ` +
-        'Where Little Snitch keeps the active profile is not documented: when the result cannot be read back, the answer says "accepted" and not "applied".',
+        'Where Little Snitch keeps the active profile is not documented: when the configuration does not show it and nothing else changed, the answer says "accepted" and not "applied".',
       inputSchema: {
         profile: z.string().max(200).nullable().describe('Exact profile name as list_profiles shows it, or null to deactivate all profiles.'),
       },
@@ -122,17 +151,20 @@ function registerSwitchTools(server: McpServer, ctx: Context): void {
     },
     safely(async ({ profile }) => {
       const result = await switchVerified(ctx, 'set_active_profile', (before) => {
-        assertAllowedByLittleSnitch(before, ctx.uid, 'switch-profile');
+        const warning = assertAllowedByLittleSnitch(before, ctx.uid, 'switch-profile');
         if (profile !== null) {
           resolveProfile(before, profile);
         }
         return {
           summary: profile === null ? 'deactivate all profiles' : `activate profile "${shown(profile, 80)}"`,
           run: () => (profile === null ? ctx.cli.deactivateAllProfiles() : ctx.cli.activateProfile(profile)),
+          // Only the key that names the active profile may differ afterwards.
+          apartFrom: withoutActiveProfile,
           confirm: (after) => {
             const active = activeProfile(after, ctx.uid);
             return active.known ? active.name === profile : null;
           },
+          warnings: one(warning),
         };
       });
       if (result === 'already') {
@@ -143,14 +175,14 @@ function registerSwitchTools(server: McpServer, ctx: Context): void {
         confirmedByReadBack: result.confirmed,
         partsThatChanged: result.partsThatChanged,
         approvedThrough: result.method,
-        ...(result.warnings.length === 0 ? {} : { warnings: result.warnings }),
+        ...sideNotes(result),
       };
       return result.confirmed
         ? { applied: true, ...common }
         : {
             accepted: true,
             ...common,
-            note: 'Little Snitch accepted the request and no rule changed. The configuration does not say which profile is active in a form this server recognises, so the switch itself is not confirmed. Check the profile in Little Snitch.',
+            note: 'Little Snitch accepted the request, and no rule, rule group, profile or preference changed. The configuration does not say which profile is active in a form this server recognises, so the switch itself is not confirmed. Check the profile in Little Snitch.',
           };
     }),
   );
@@ -171,7 +203,7 @@ function registerSwitchTools(server: McpServer, ctx: Context): void {
     safely(async ({ group, enabled }) => {
       let target: { id: string; name: string } | undefined;
       const result = await switchVerified(ctx, 'set_rule_group_enabled', (before) => {
-        assertAllowedByLittleSnitch(before, ctx.uid, 'edit-rules');
+        const warning = assertAllowedByLittleSnitch(before, ctx.uid, 'edit-rules');
         // The group is looked up in the configuration as it is now, so the name sent to Little Snitch and the id checked afterwards belong together.
         const found = resolveGroup(before, group);
         if (found.name === null) {
@@ -192,10 +224,14 @@ function registerSwitchTools(server: McpServer, ctx: Context): void {
         }
         const groups = before['groups'];
         const entry = isObject(groups) ? groups[found.id] : undefined;
+        if (!isObject(groups) || !isObject(entry)) {
+          throw new LittleSnitchError('unexpected-output', 'The rule groups in the configuration are not in a form this server can check a switch against. Switch the group in Little Snitch itself.');
+        }
         return {
           summary: `switch rule group "${shown(name, 80)}" ${enabled ? 'on' : 'off'}`,
           run: () => ctx.cli.setRuleGroupEnabled(name, enabled),
-          ...(isObject(groups) && isObject(entry) ? { expected: { ...before, groups: { ...groups, [found.id]: { ...entry, isActive: enabled } } } } : { confirm: () => null }),
+          expected: { ...before, groups: { ...groups, [found.id]: { ...entry, isActive: enabled } } },
+          warnings: one(warning),
         };
       });
       if (result === 'already') {
@@ -207,7 +243,7 @@ function registerSwitchTools(server: McpServer, ctx: Context): void {
         enabled,
         confirmedByReadBack: result.confirmed,
         approvedThrough: result.method,
-        ...(result.warnings.length === 0 ? {} : { warnings: result.warnings }),
+        ...sideNotes(result),
       };
     }),
   );
@@ -263,7 +299,7 @@ function registerRuleTools(server: McpServer, ctx: Context): void {
       const outcome = await applyModelChange(
         ctx,
         (before) => {
-          assertAllowedByLittleSnitch(before, ctx.uid, 'edit-rules');
+          const warning = assertAllowedByLittleSnitch(before, ctx.uid, 'edit-rules');
           const rule = buildRule(spec, { uid: ctx.uid, now: ctx.now(), model: before });
           // A rule of another macOS user with the same meaning is not a duplicate of this user's rule.
           const twin = rulesOf(before).find(
@@ -281,6 +317,7 @@ function registerRuleTools(server: McpServer, ctx: Context): void {
             written: [rule],
             removedRefs: [],
             preview: { wouldAdd: summarize(rule, before), approvalPrompt: prompts.add(rule, ctx.uid) },
+            warnings: one(warning),
           };
         },
         args.dry_run === true,
@@ -288,7 +325,7 @@ function registerRuleTools(server: McpServer, ctx: Context): void {
       if (!outcome.applied) {
         return outcome;
       }
-      return { applied: true, rule: built === undefined ? null : readBack(outcome.after, built), backup: outcome.backup, approvedThrough: outcome.method, ...warned(outcome.warnings) };
+      return { applied: true, rule: built === undefined ? null : readBack(outcome.after, built), backup: outcome.backup, approvedThrough: outcome.method, ...sideNotes(outcome) };
     }),
   );
 
@@ -297,7 +334,8 @@ function registerRuleTools(server: McpServer, ctx: Context): void {
     {
       title: 'Change a firewall rule',
       description:
-        'Change the action, priority or notes of one rule, found by the ref list_rules shows. Protected and factory rules are refused, and so is a rule whose remote list is too long to show in the approval prompt. ' +
+        'Change the action, priority or notes of one rule, found by the ref list_rules shows. Refused: protected and factory rules, a rule the approval prompt could not show exactly (a remote list that is too long, or data it would have to leave out or cut), ' +
+        'a change that would make the rule a copy of another rule, and a change to the action or priority of a rule for any process and any remote. ' +
         `Changing deny to allow opens the firewall: state the change to the person before calling, or call with dry_run first. A backup is saved first. ${APPROVAL}`,
       inputSchema: {
         ref: REF,
@@ -321,10 +359,21 @@ function registerRuleTools(server: McpServer, ctx: Context): void {
       const outcome = await applyModelChange(
         ctx,
         (before) => {
-          assertAllowedByLittleSnitch(before, ctx.uid, 'edit-rules');
+          const warning = assertAllowedByLittleSnitch(before, ctx.uid, 'edit-rules');
           const updated = updateRule(before, args.ref, patch, ctx.now());
-          // The prompt shows the rule as it will be. If its remotes do not fit, nobody could approve it knowingly.
+          // The prompt says what changes and shows the rule as it will be. If either cannot be shown exactly, nobody could approve it knowingly.
+          assertFitsPrompt(updated.before, true);
           assertFitsPrompt(updated.after, true);
+          const owner = asNumber(updated.after['uid']) ?? ctx.uid;
+          const twin =
+            semanticKey(updated.before) === semanticKey(updated.after)
+              ? undefined
+              : rulesOf(before).find(
+                  (existing) => existing !== updated.before && semanticKey(existing) === semanticKey(updated.after) && (asNumber(existing['uid']) ?? ctx.uid) === owner,
+                );
+          if (twin !== undefined) {
+            throw new LittleSnitchError('invalid-input', `After this change the rule would mean the same as another rule (ref ${ruleRef(twin)}). Remove one of the two instead.`);
+          }
           written = updated.after;
           const prompt = prompts.update(updated.before, updated.after, ctx.uid);
           return {
@@ -335,6 +384,7 @@ function registerRuleTools(server: McpServer, ctx: Context): void {
             written: [updated.after],
             removedRefs: [args.ref],
             preview: { before: summarize(updated.before, before), after: summarize(updated.after, before), approvalPrompt: prompt },
+            warnings: one(warning),
           };
         },
         args.dry_run === true,
@@ -342,7 +392,7 @@ function registerRuleTools(server: McpServer, ctx: Context): void {
       if (!outcome.applied) {
         return outcome;
       }
-      return { applied: true, rule: written === undefined ? null : readBack(outcome.after, written), backup: outcome.backup, approvedThrough: outcome.method, ...warned(outcome.warnings) };
+      return { applied: true, rule: written === undefined ? null : readBack(outcome.after, written), backup: outcome.backup, approvedThrough: outcome.method, ...sideNotes(outcome) };
     }),
   );
 
@@ -351,7 +401,7 @@ function registerRuleTools(server: McpServer, ctx: Context): void {
     {
       title: 'Remove a firewall rule',
       description:
-        'Remove one rule, found by the ref list_rules shows. Protected and factory rules are refused, and so is a rule whose remote list is too long to show in the approval prompt. Removing a deny rule opens the firewall, and removing an allow rule ' +
+        'Remove one rule, found by the ref list_rules shows. Protected and factory rules are refused, and so is a rule the approval prompt could not show exactly (a remote list that is too long, or data it would have to leave out or cut). Removing a deny rule opens the firewall, and removing an allow rule ' +
         `can break an app: state the rule to the person before calling, or call with dry_run first. A backup is saved first, so restore_backup can bring the rule back. ${APPROVAL}`,
       inputSchema: { ref: REF, dry_run: DRY_RUN },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false, title: 'Remove a firewall rule' },
@@ -361,7 +411,7 @@ function registerRuleTools(server: McpServer, ctx: Context): void {
       const outcome = await applyModelChange(
         ctx,
         (before) => {
-          assertAllowedByLittleSnitch(before, ctx.uid, 'edit-rules');
+          const warning = assertAllowedByLittleSnitch(before, ctx.uid, 'edit-rules');
           const { model: next, removed } = removeRule(before, args.ref);
           assertFitsPrompt(removed, true);
           removedSummary = summarize(removed, before);
@@ -373,6 +423,7 @@ function registerRuleTools(server: McpServer, ctx: Context): void {
             written: [],
             removedRefs: [args.ref],
             preview: { wouldRemove: removedSummary, approvalPrompt: prompts.remove(removed, ctx.uid) },
+            warnings: one(warning),
           };
         },
         args.dry_run === true,
@@ -380,7 +431,7 @@ function registerRuleTools(server: McpServer, ctx: Context): void {
       if (!outcome.applied) {
         return outcome;
       }
-      return { applied: true, removed: removedSummary ?? null, backup: outcome.backup, approvedThrough: outcome.method, ...warned(outcome.warnings) };
+      return { applied: true, removed: removedSummary ?? null, backup: outcome.backup, approvedThrough: outcome.method, ...sideNotes(outcome) };
     }),
   );
 }
@@ -421,28 +472,29 @@ function registerRestoreTool(server: McpServer, ctx: Context): void {
       }
       return ctx.changes.run(async () => {
         const { model: current, text: currentText } = await ctx.models.fresh();
-        assertAllowedByLittleSnitch(current, ctx.uid, 'edit-rules');
+        const warning = assertAllowedByLittleSnitch(current, ctx.uid, 'edit-rules');
         const effect = effectOn(current);
         // Saving the copy from before must never remove the backup that is being restored.
         const safety = await ctx.store.writeBackup(currentText, 'before-restore_backup', [info.name]);
         // Root restores the content that was read and shown here, from a fresh file, whatever happens to the backup file meanwhile.
-        const pending = await ctx.store.writePending(text);
-        try {
-          const { after, method, warnings } = await restoreVerified(ctx, {
-            tool: 'restore_backup',
-            summary: `restore the backup ${info.name}`,
-            prompt: prompts.restore(info.name, effect.rulesRemoved, effect.rulesAdded, effect.otherPartsChanged.length),
-            before: current,
-            beforeText: currentText,
-            backup: safety,
-            file: pending,
-            fileSha256: sha256(text),
-            expected: target,
-          });
-          return { applied: true, restored: info.name, rulesNow: rulesOf(after).length, effect, savedBefore: safety.name, approvedThrough: method, ...warned(warnings) };
-        } finally {
-          await ctx.store.removePending(pending);
-        }
+        const restored = await restoreText(ctx, text, {
+          tool: 'restore_backup',
+          summary: `restore the backup ${info.name}`,
+          prompt: prompts.restore(info.name, effect.rulesRemoved, effect.rulesAdded, effect.otherPartsChanged.length),
+          before: current,
+          beforeText: currentText,
+          backup: safety,
+          expected: target,
+        });
+        return {
+          applied: true,
+          restored: info.name,
+          rulesNow: rulesOf(restored.after).length,
+          effect,
+          savedBefore: safety.name,
+          approvedThrough: restored.method,
+          ...sideNotes({ ...restored, warnings: [...one(warning), ...restored.warnings] }),
+        };
       });
     }),
   );

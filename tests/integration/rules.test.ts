@@ -138,6 +138,8 @@ describe('add_rule', () => {
     const h = await start();
     const { data } = await h.call('add_rule', NEW_RULE);
     expect(data.applied).toBe(true);
+    // What it rewrote is not compared, and the result says so by name.
+    expect(data.rewrittenByLittleSnitch).toEqual(['developerTeamNames', 'knownNEs']);
     // The fake did what a real 6.5 did: it rebuilt the developer names, touched the known extensions and renamed the map position keys.
     expect(h.modelText()).toContain('"developerTeamNames":{"MLZF7K7B5R":"Objective Development, rebuilt 1"}');
     expect(h.modelText()).toContain('"knownNEs":["com.example.vpn"]');
@@ -282,18 +284,12 @@ describe('several changes at once', () => {
 
   it('refuses a change while another server is in the middle of one', async () => {
     const h = await start();
-    const release = await acquireKernelLock(h.lockFile);
+    const lock = await acquireKernelLock(h.lockFile);
     const { data } = await h.call('add_rule', NEW_RULE);
     expect(data.error.kind).toBe('busy');
     expect(h.calls()).toEqual([]);
-    await release();
+    await lock.release();
     expect((await h.call('add_rule', NEW_RULE)).data.applied).toBe(true);
-  });
-
-  it('shares one lock between servers that were started with different data folders', async () => {
-    const h = await start();
-    expect(h.lockFile.startsWith(h.dataDir)).toBe(false);
-    expect(h.lockFile.endsWith(path.join('Library', 'Application Support', 'little-snitch-mcp-server', 'change.lock'))).toBe(true);
   });
 });
 
@@ -457,31 +453,6 @@ describe('remove_rule and restore_backup', () => {
     expect(data.error.details.unexpected[0].remote).toEqual({ kind: 'domains', values: ['stray.example'] });
     expect(data.error.details).toMatchObject({ rolledBack: true });
     expect(refs(h)).toEqual(beforeRestore);
-  });
-});
-
-describe('what the owner switched off in Little Snitch itself', () => {
-  it('does not add, change, remove or restore when "Allow Rule Editing" is off for this user', async () => {
-    const h = await start({ modelText: sampleModelText().replace('"markNewRulesAsUnapproved": false', '"markNewRulesAsUnapproved": false, "allowRuleAndProfileEditing": false') });
-    const refsNow = rulesOf(h.model()).map(ruleRef);
-    for (const [tool, args] of [
-      ['add_rule', NEW_RULE],
-      ['update_rule', { ref: refsNow[0], action: 'deny' }],
-      ['remove_rule', { ref: refsNow[0] }],
-    ] as const) {
-      const { data } = await h.call(tool, args);
-      expect(data.error.kind).toBe('capability-disabled');
-      expect(data.error.message).toContain('"Allow Rule Editing" is switched off');
-    }
-    expect(commands(h)).toEqual(['export-model', 'export-model', 'export-model']);
-    expect(rulesOf(h.model()).map(ruleRef)).toEqual(refsNow);
-  });
-
-  it('is not held back by the switch of another macOS user', async () => {
-    const h = await start({
-      modelText: sampleModelText().replace('"users": [', '"users": [\n    { "uid": 502, "shortName": "other", "fullName": "Other", "defaults": { "allowRuleAndProfileEditing": false } },'),
-    });
-    expect((await h.call('add_rule', NEW_RULE)).data.applied).toBe(true);
   });
 });
 

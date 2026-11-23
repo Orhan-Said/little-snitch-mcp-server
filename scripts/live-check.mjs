@@ -23,7 +23,7 @@ import { execFile } from '../dist/cli/exec.js';
 import { loadConfig } from '../dist/config.js';
 import { createContext } from '../dist/context.js';
 import { detectEncoding } from '../dist/model/dates.js';
-import { isObject, parseModelText } from '../dist/model/json.js';
+import { canonical, isObject, parseModelText } from '../dist/model/json.js';
 import { activeProfile } from '../dist/model/profiles.js';
 import { compareModels } from '../dist/model/verify.js';
 import { parseTraffic, formatTrafficDate } from '../dist/traffic.js';
@@ -99,7 +99,7 @@ function modelShape(model) {
 const section = (title, value) => console.log(`\n## ${title}\n${typeof value === 'string' ? value : JSON.stringify(value, null, 2)}`);
 const problem = (error) => ({ kind: error.kind ?? 'internal', message: error.message, remedy: error.remedy });
 
-/** The three privileged reads go through one approval. */
+/** The four privileged reads go through one approval. */
 async function readChecks() {
   const config = loadConfig(process.env, passThrough, os.homedir());
   const ctx = createContext(config);
@@ -166,9 +166,15 @@ async function readChecks() {
     const forUser = parseModelText(text);
     const comparison = compareModels(plain, forUser);
     sameForUser = comparison.ok;
+    // No restore lies between the two exports, so nothing needs to be left out here: every top-level part is also compared as it is.
+    // Counters that traffic moves in those seconds (a rule's last use, the statistics) can differ and are no fault of the option.
+    const partsThatDifferAtAll = [...new Set([...Object.keys(plain), ...Object.keys(forUser)])].sort().filter((key) => canonical(plain[key]) !== canonical(forUser[key]));
     const uids = (model) => (Array.isArray(model.users) ? model.users.map((entry) => Number(entry.uid?.value ?? entry.uid)) : []);
     return {
       sameAsPlainExport: comparison.ok,
+      identicalInEveryPart: partsThatDifferAtAll.length === 0,
+      partsThatDifferAtAll,
+      partsNotComparedThatDiffer: comparison.rewrittenByLittleSnitch,
       rules: Array.isArray(forUser.rules) ? forUser.rules.length : 'not a list',
       userIds: uids(forUser),
       partsThatDiffer: comparison.changedSections,

@@ -6,13 +6,15 @@ import { ruleRef, summarizeRule, tolerantKey, type RuleSummary } from './rules.j
 /**
  * Parts of the configuration that Little Snitch writes on its own account:
  * counters, caches of programs and developers it has seen, the network
- * extensions it knows, and its own version markers. They hold no rule, switch
- * or preference, so a difference in them is not a difference in the firewall.
+ * extensions it knows, and its own version markers. A difference in them does
+ * not fail a comparison, because Little Snitch rewrites them by itself. It is
+ * reported instead (`rewrittenByLittleSnitch`), so that it does not pass unseen.
  * Everything else must match exactly.
  *
  * "developerTeamNames" and "knownNEs" are on the list because a real restore
  * on Little Snitch 6.5 came back with both rewritten, although the restored
- * file had them unchanged (2026-11-23).
+ * file had them unchanged (2026-11-23). What they hold was not recorded, and
+ * whether "knownNEs" has any effect on filtering is not known.
  */
 export const LITTLE_SNITCH_OWNED_SECTIONS = [
   'blocklistStatistics',
@@ -30,8 +32,8 @@ export const LITTLE_SNITCH_OWNED_SECTIONS = [
  * database check, the map position of the Network Monitor. The first three
  * were chosen from their names in a real 6.5 configuration, not from watching
  * them change. The map position was seen to change: a restore wrote it back
- * under a key that starts with a small letter. So the names are compared
- * without regard to letter case.
+ * under a key that starts with a small letter, so both spellings are listed.
+ * Names are compared exactly, letter case included.
  * A difference in them alone is not a difference in the firewall.
  */
 export const VOLATILE_PREFERENCE_KEYS = [
@@ -40,6 +42,8 @@ export const VOLATILE_PREFERENCE_KEYS = [
   'ipAddressDatabaseLastUpdateCheckFailed',
   'GeoViewMyLocationLatitude',
   'GeoViewMyLocationLongitude',
+  'geoViewMyLocationLatitude',
+  'geoViewMyLocationLongitude',
 ] as const;
 
 export interface CompareOptions {
@@ -70,6 +74,11 @@ export interface Comparison {
   readonly changedPreferenceKeys: readonly string[];
   /** The group and profile differences in words, where they can be described. */
   readonly otherChanges: readonly string[];
+  /**
+   * The sections of LITTLE_SNITCH_OWNED_SECTIONS that differ. They do not count
+   * for `ok`. They are named so that the person can see what was not compared.
+   */
+  readonly rewrittenByLittleSnitch: readonly string[];
 }
 
 function describeGroupsAndProfiles(expected: JsonObject, actual: JsonObject): readonly string[] {
@@ -105,10 +114,8 @@ function describeGroupsAndProfiles(expected: JsonObject, actual: JsonObject): re
   return changes;
 }
 
-const VOLATILE_LOWERCASE: readonly string[] = VOLATILE_PREFERENCE_KEYS.map((key) => key.toLowerCase());
-
 const dropVolatile = (preferences: JsonValue | undefined): JsonValue | undefined =>
-  isObject(preferences) ? without(preferences, Object.keys(preferences).filter((key) => VOLATILE_LOWERCASE.includes(key.toLowerCase()))) : preferences;
+  isObject(preferences) ? without(preferences, VOLATILE_PREFERENCE_KEYS) : preferences;
 
 /** The configuration with the volatile preference keys taken out of the global and the per-user preferences. */
 function withoutVolatilePreferences(model: JsonObject): JsonObject {
@@ -161,10 +168,11 @@ export const OPAQUE_RULE_ENTRIES = 'rules (entries that are not rule objects)';
  * Compares the configuration Little Snitch reports with the one that was
  * intended. The comparison is strict: a rule nobody asked for, a field of a
  * written rule that came back different, and any change to preferences, rule
- * groups or profiles all count as a difference. Only three things are ignored:
+ * groups or profiles all count as a difference. Three things do not count:
  * the fields Little Snitch updates as traffic flows (a rule's last use and use
  * count), the sections listed in LITTLE_SNITCH_OWNED_SECTIONS, and the
- * preference keys listed in VOLATILE_PREFERENCE_KEYS.
+ * preference keys listed in VOLATILE_PREFERENCE_KEYS. So this is not a
+ * comparison of every byte, and the documentation must not call it one.
  */
 export function compareModels(expectedModel: JsonObject, actualModel: JsonObject, options: CompareOptions = {}): Comparison {
   const expected = withoutVolatilePreferences(expectedModel);
@@ -220,6 +228,7 @@ export function compareModels(expectedModel: JsonObject, actualModel: JsonObject
     changedSections: sections,
     changedPreferenceKeys: changedPreferenceKeys(expected, actual),
     otherChanges: describeGroupsAndProfiles(expected, actual),
+    rewrittenByLittleSnitch: LITTLE_SNITCH_OWNED_SECTIONS.filter((key) => canonical(expected[key]) !== canonical(actual[key])),
   };
 }
 

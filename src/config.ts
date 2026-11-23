@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { SYSTEM_LOCK_FILE } from './lock.js';
 
 export const DEFAULT_CLI_PATH = '/Applications/Little Snitch.app/Contents/Components/littlesnitch';
 
@@ -18,14 +19,17 @@ export interface Config {
   readonly unattendedWrites: boolean;
   readonly dataDir: string;
   /**
-   * The lock that keeps two changes apart. It has one fixed place per macOS user,
-   * so two servers started with different data folders still share it.
+   * The lock that keeps two changes apart. It has one fixed place for the whole
+   * Mac, because Little Snitch has one configuration for all users. No option
+   * and no environment variable moves it.
    */
   readonly lockFile: string;
   readonly modelCacheMs: number;
   /** Time allowed for a command that may wait on a person at an approval prompt. */
   readonly interactiveTimeoutMs: number;
   readonly commandTimeoutMs: number;
+  /** How long after a change whose command did not end in time no further change is made. */
+  readonly settleMs: number;
 }
 
 export class ConfigError extends Error {
@@ -153,10 +157,11 @@ export function loadConfig(env: Readonly<Record<string, string | undefined>>, ar
       flags.unattendedWrites ?? env['LITTLE_SNITCH_MCP_UNATTENDED_WRITES'],
     ),
     dataDir,
-    lockFile: path.join(homeDir, 'Library', 'Application Support', 'little-snitch-mcp-server', 'change.lock'),
+    lockFile: SYSTEM_LOCK_FILE,
     modelCacheMs: 15_000,
     interactiveTimeoutMs: 5 * 60_000,
     commandTimeoutMs: 60_000,
+    settleMs: 60_000,
   });
 }
 

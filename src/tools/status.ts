@@ -1,6 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Context } from '../context.js';
 import { ELEVATION_REMEDY, TERMINAL_ACCESS_REMEDY } from '../errors.js';
+import { littleSnitchSwitch } from '../model/permissions.js';
 import { READ_ONLY, safely } from './shared.js';
 
 const TOUCH_ID_TIP =
@@ -59,6 +60,8 @@ export async function readStatus(ctx: Context): Promise<unknown> {
                 ? 'the macOS administrator password dialog (unattended writes are switched on, but sudo needs a password)'
                 : 'not possible yet: sudo needs a password and Touch ID for sudo is not set up';
 
+  const known = ctx.models.peek();
+
   const toDo = [
     ...(binary.exists ? [] : ['Install Little Snitch 6 from https://obdev.at/littlesnitch.']),
     ...(binary.exists ? problems : []),
@@ -70,6 +73,9 @@ export async function readStatus(ctx: Context): Promise<unknown> {
       : []),
     ...(config.elevation === 'none' && config.allow.size > 0
       ? ['Elevation "none" is meant for tests: the assistant can make the allowed changes without anyone approving them.']
+      : []),
+    ...(ctx.changes.waitingForCommand()
+      ? ['An earlier change did not end in time. This server makes no change until a minute has passed and the command it started is gone. Look at the configuration in Little Snitch before you ask for another change.']
       : []),
     ...(config.allow.size === 0
       ? ['This server only reads. To let the assistant make changes, start it with --allow switches, --allow rules, --allow restore, or a comma-separated list.']
@@ -93,6 +99,13 @@ export async function readStatus(ctx: Context): Promise<unknown> {
       approvalForChanges: changeApproval,
     },
     changesAllowed: [...config.allow].sort(),
+    // Read from the configuration this server last read. Reading it now would need an approval, and this tool never asks for one.
+    littleSnitchSwitches:
+      known === undefined
+        ? 'not read yet: shown once the configuration has been read (list_rules, for example)'
+        : { allowRuleEditing: littleSnitchSwitch(known, ctx.uid, 'edit-rules'), allowProfileSwitching: littleSnitchSwitch(known, ctx.uid, 'switch-profile') },
+    waitingAfterTimedOutChange: ctx.changes.waitingForCommand(),
+    changeLock: config.lockFile,
     dataFolder: config.dataDir,
     backups: (await ctx.store.listBackups()).length,
     toDo,
@@ -106,7 +119,8 @@ export function registerStatusTool(server: McpServer, ctx: Context): void {
       title: 'Little Snitch status',
       description:
         'Check whether Little Snitch can be reached and what this server may do: installed version, whether "Allow access via Terminal" is on, ' +
-        'how root access is obtained, which kinds of changes are allowed, and a to-do list for the person when something is missing. ' +
+        'how root access is obtained, which kinds of changes are allowed, whether Little Snitch\'s own switches "Allow Rule Editing" and "Allow Profile Switching" were found ' +
+        '(on, off, unreadable or not-found), and a to-do list for the person when something is missing. ' +
         'Never shows an approval prompt. Call this first, and again whenever another tool reports a setup problem.',
       inputSchema: {},
       annotations: { ...READ_ONLY, title: 'Little Snitch status' },

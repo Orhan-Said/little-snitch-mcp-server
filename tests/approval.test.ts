@@ -1,13 +1,7 @@
-import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
-import { assertFitsPrompt, describeChanges, hasHiddenCharacters, MAX_REMOTE_TEXT, prompts, remoteText, ruleText, shown } from '../src/approval.js';
-import { createChangeQueue } from '../src/context.js';
-import { acquireKernelLock } from '../src/lock.js';
+import { describe, expect, it } from 'vitest';
+import { assertFitsPrompt, describeChanges, hasHiddenCharacters, MAX_REMOTE_TEXT, prompts, remoteText, ruleText, shown, unshowable } from '../src/approval.js';
 import { validateNewRule } from '../src/model/edit.js';
-import { numberValue } from '../src/model/json.js';
+import { numberValue, parseModelText, rulesOf } from '../src/model/json.js';
 
 const SLACK = '/Applications/Slack.app/Contents/MacOS/Slack';
 
@@ -115,110 +109,63 @@ describe('validateNewRule and hidden characters', () => {
   });
 });
 
-describe('the change lock', () => {
-  let dir: string | undefined;
-  const lockFile = (): string => {
-    dir = mkdtempSync(path.join(os.tmpdir(), 'lsmcp-lock-'));
-    return path.join(dir, 'Application Support', 'change.lock');
-  };
-  afterEach(() => {
-    if (dir !== undefined) {
-      rmSync(dir, { recursive: true, force: true });
-    }
+describe('unshowable: a rule the prompt could not show exactly', () => {
+  const base = { action: 'allow', process: SLACK };
+  /** A rule as Little Snitch might hold it, read the way the server reads a configuration. */
+  const stored = (json: string) => rulesOf(parseModelText(`{"rules":[${json}]}`))[0] ?? {};
+
+  it('finds nothing wrong with the rules the prompt can show', () => {
+    expect(unshowable({ ...base, 'remote-domains': 'example.com' })).toBeUndefined();
+    expect(unshowable({ ...base, 'remote-hosts': ['a.example', 'b.example'], direction: 'both', ports: '8000-8100', protocol: '6', priority: 'high', notes: 'fine' })).toBeUndefined();
+    expect(unshowable({ action: 'deny', remote: 'local-net' })).toBeUndefined();
+    expect(unshowable(stored('{"action":"allow","process":"/usr/bin/curl","remote":"any","ports":443,"protocol":6}'))).toBeUndefined();
   });
 
-  it('is held by one taker at a time and can be taken again once given back', async () => {
-    const file = lockFile();
-    const release = await acquireKernelLock(file);
-    expect(existsSync(file)).toBe(true);
-    await expect(acquireKernelLock(file)).rejects.toMatchObject({ kind: 'busy', message: expect.stringContaining('Another change to Little Snitch is in progress') });
-    await release();
-    const again = await acquireKernelLock(file);
-    await again();
-    await again();
+  it('shows a port or protocol that is stored as a number', () => {
+    expect(ruleText(stored('{"action":"allow","process":"/usr/bin/curl","remote":"any","ports":443,"protocol":6}'))).toBe(
+      'ALLOW connections to ANY remote for /usr/bin/curl (ports 443, protocol 6)',
+    );
   });
 
-  it('lets exactly one of many simultaneous takers through', async () => {
-    const file = lockFile();
-    const attempts = await Promise.allSettled(Array.from({ length: 12 }, () => acquireKernelLock(file)));
-    const winners = attempts.filter((attempt) => attempt.status === 'fulfilled');
-    expect(winners).toHaveLength(1);
-    expect(attempts.filter((attempt) => attempt.status === 'rejected')).toHaveLength(11);
-    await (winners[0] as PromiseFulfilledResult<() => Promise<void>>).value();
+  it('refuses a remote list with an entry that is not text, which the prompt would leave out', () => {
+    const rule = stored('{"action":"allow","process":"/usr/bin/curl","remote-hosts":["shown.example",{"host":"hidden.example"},7]}');
+    expect(unshowable(rule)).toBe('a "remote-hosts" value that is not text or a list of texts');
+    expect(() => assertFitsPrompt(rule, true)).toThrow(/could not show you exactly what the rule is\. Change or remove it in Little Snitch itself/);
   });
 
-  it('frees itself when the process that holds it dies, with nothing to clean up', async () => {
-    const file = lockFile();
-    // Another process holds the lock the same way the server does: lockf runs cat on a pipe that the process keeps open.
-    const script =
-      `const { spawn } = require('node:child_process');` +
-      `const child = spawn('/usr/bin/lockf', ['-k', '-t', '0', ${JSON.stringify(file)}, '/bin/sh', '-c', 'echo held; exec /bin/cat >/dev/null'], { stdio: ['pipe', 'pipe', 'inherit'] });` +
-      `child.stdout.on('data', (chunk) => { if (String(chunk).includes('held')) console.log('holding'); });` +
-      `child.on('close', () => process.exit(1));` +
-      `setInterval(() => {}, 1000);`;
-    mkdirSync(path.dirname(file), { recursive: true });
-    const holder = spawn(process.execPath, ['-e', script], { stdio: ['ignore', 'pipe', 'inherit'] });
-    await new Promise<void>((resolve, reject) => {
-      holder.stdout.on('data', (chunk: Buffer) => (chunk.toString().includes('holding') ? resolve() : undefined));
-      holder.on('close', () => reject(new Error('the holder ended before it took the lock')));
-    });
-    await expect(acquireKernelLock(file)).rejects.toMatchObject({ kind: 'busy' });
-    holder.kill('SIGKILL');
-    await new Promise((resolve) => holder.on('close', resolve));
-    let release: (() => Promise<void>) | undefined;
-    for (let attempt = 0; attempt < 40 && release === undefined; attempt += 1) {
-      release = await acquireKernelLock(file).catch(() => undefined);
-      if (release === undefined) {
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-    }
-    expect(release).toBeTypeOf('function');
-    await release?.();
-  });
-});
-
-describe('createChangeQueue', () => {
-  it('runs changes one after another, in the order they were asked for', async () => {
-    const events: string[] = [];
-    let held = false;
-    const queue = createChangeQueue(async () => {
-      expect(held).toBe(false);
-      held = true;
-      return async () => {
-        held = false;
-      };
-    });
-    const change = (name: string, ms: number) =>
-      queue.run(async () => {
-        events.push(`${name} starts`);
-        await new Promise((resolve) => setTimeout(resolve, ms));
-        events.push(`${name} ends`);
-        return name;
-      });
-    const results = await Promise.all([change('first', 30), change('second', 1), change('third', 1)]);
-    expect(results).toEqual(['first', 'second', 'third']);
-    expect(events).toEqual(['first starts', 'first ends', 'second starts', 'second ends', 'third starts', 'third ends']);
+  it('refuses a rule with two remote fields, of which the prompt would show one', () => {
+    expect(unshowable({ ...base, 'remote-domains': 'shown.example', 'remote-addresses': ['203.0.113.9'] })).toBe('more than one remote field (remote-domains, remote-addresses)');
+    expect(unshowable({ ...base, remote: 'any', 'remote-hosts': 'x.example' })).toContain('more than one remote field');
   });
 
-  it('gives the lock back and carries on after a change that failed', async () => {
-    let releases = 0;
-    const queue = createChangeQueue(async () => async () => {
-      releases += 1;
-    });
-    await expect(queue.run(async () => { throw new Error('boom'); })).rejects.toThrow('boom');
-    expect(await queue.run(async () => 'next')).toBe('next');
-    expect(releases).toBe(2);
+  it('refuses a remote field it does not know', () => {
+    expect(unshowable({ ...base, 'remote-countries': ['XX'] })).toBe('a remote field this server does not know ("remote-countries")');
   });
 
-  it('does not start a change while another server holds the lock', async () => {
-    let started = false;
-    const queue = createChangeQueue(async () => { throw new Error('busy'); });
-    await expect(queue.run(async () => { started = true; })).rejects.toThrow('busy');
-    expect(started).toBe(false);
+  it('refuses a remote that would be cut or printed differently', () => {
+    expect(unshowable({ ...base, remote: `local-net${'x'.repeat(40)}` })).toContain('"remote" entry');
+    expect(remoteText({ ...base, remote: `local-net${'x'.repeat(40)}` }).complete).toBe(false);
+    expect(unshowable({ ...base, remote: ['any'] })).toBe('a "remote" value that is not text or a list of texts');
+    expect(unshowable({ ...base, 'remote-hosts': [`${'a'.repeat(254)}.example`] })).toContain('"remote-hosts" entry');
+    expect(unshowable({ ...base, 'remote-hosts': ['evil\u202egpj.example'] })).toContain('hidden characters');
+    expect(unshowable({ ...base, 'remote-hosts': ['two  spaces.example'] })).toContain('unusual spaces');
+    expect(unshowable({ ...base, 'remote-hosts': [] })).toContain('not text or a list of texts');
+    expect(unshowable({ ...base, 'remote-hosts': [''] })).toContain('empty');
   });
 
-  it('keeps the result of a finished change when giving the lock back fails', async () => {
-    const queue = createChangeQueue(async () => async () => { throw new Error('could not release'); });
-    expect(await queue.run(async () => 'done')).toBe('done');
+  it('refuses the other fields the prompt prints when they would be left out or cut', () => {
+    expect(unshowable({ ...base, remote: 'any', direction: 'sideways' })).toBe('a direction this server does not know');
+    expect(unshowable({ ...base, remote: 'any', priority: 'highest' })).toBe('a priority this server does not know');
+    expect(unshowable({ ...base, remote: 'any', ports: ['443', '80'] })).toBe('a "ports" value that cannot be shown exactly');
+    expect(unshowable({ ...base, remote: 'any', ports: '1'.repeat(41) })).toBe('a "ports" value that cannot be shown exactly');
+    expect(unshowable({ ...base, remote: 'any', protocol: true })).toBe('a "protocol" value that cannot be shown exactly');
+    expect(unshowable({ action: 'allow-but-with-a-very-long-name', remote: 'any' })).toBe('a "action" value that cannot be shown exactly');
+    expect(unshowable({ action: 'allow', process: '/Applications/Safe\u202e/Tool', remote: 'any' })).toBe('a "process" value that is not plain text');
+    expect(unshowable({ ...base, via: ['/sbin/ping'], remote: 'any' })).toBe('a "via" value that is not plain text');
+    expect(unshowable({ ...base, remote: 'any', notes: ['a list'] })).toBe('notes that are not text');
+  });
+
+  it('still lets a long process path through, which the prompt shows by its beginning and its end', () => {
+    expect(unshowable({ action: 'allow', process: `/Applications/${'A'.repeat(400)}/Contents/MacOS/Tool`, remote: 'any' })).toBeUndefined();
   });
 });

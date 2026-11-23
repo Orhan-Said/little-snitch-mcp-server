@@ -15,9 +15,20 @@ const BACKUP: BackupInfo = { name: 'backup.json', path: '/data/backups/backup.js
  * A context whose Little Snitch is scripted: `restores` answers each restore in
  * turn, and `reads` gives the configuration for each fresh read after the first.
  */
-function scripted(options: { restores: Array<() => ChangeResult>; reads?: Array<() => string>; logWritable?: boolean; cliPath?: string }) {
+function scripted(options: {
+  restores: Array<() => ChangeResult>;
+  reads?: Array<() => string>;
+  logWritable?: boolean;
+  cliPath?: string;
+  /** Whether the change lock is still held each time the code asks, in order. Afterwards it is held. */
+  lockHeld?: boolean[];
+  pendingRemovable?: boolean;
+}) {
   const audits: AuditEntry[] = [];
   const restoredFiles: string[] = [];
+  const removedPending: string[] = [];
+  const lockHeld = [...(options.lockHeld ?? [])];
+  const queue = { waiting: false };
   const restores = [...options.restores];
   const reads = [() => sampleModelText(), ...(options.reads ?? [])];
   let cached: JsonObject | undefined;
@@ -34,7 +45,18 @@ function scripted(options: { restores: Array<() => ChangeResult>; reads?: Array<
   const ctx = {
     config: { cliPath: options.cliPath ?? '/fake/littlesnitch' },
     cli,
-    changes: { run: <T>(change: () => Promise<T>) => change() },
+    changes: {
+      run: <T>(change: () => Promise<T>) => change(),
+      assertLockHeld: () => {
+        if (lockHeld.shift() === false) {
+          throw new LittleSnitchError('busy', 'The lock that keeps changes apart was lost while this change was running.');
+        }
+      },
+      commandMayStillRun: () => {
+        queue.waiting = true;
+      },
+      waitingForCommand: () => queue.waiting,
+    },
     models: {
       fresh: async () => {
         const read = reads.shift();
@@ -56,7 +78,10 @@ function scripted(options: { restores: Array<() => ChangeResult>; reads?: Array<
     store: {
       writeBackup: async () => BACKUP,
       writePending: async () => '/data/pending/change.json',
-      removePending: async () => undefined,
+      removePending: async (file: string) => {
+        removedPending.push(file);
+        return options.pendingRemovable ?? true;
+      },
       audit: async (entry: AuditEntry) => {
         audits.push(entry);
         return options.logWritable ?? true;
@@ -65,7 +90,7 @@ function scripted(options: { restores: Array<() => ChangeResult>; reads?: Array<
     now: () => NOW,
     uid: 501,
   } as unknown as Context;
-  return { ctx, audits, restoredFiles };
+  return { ctx, audits, restoredFiles, removedPending, queue };
 }
 
 const plan = (before: JsonObject) => {
@@ -79,17 +104,54 @@ const timeout = (): never => {
 
 describe('applyModelChange when the change step times out', () => {
   it('starts nothing further, because the command may still be running as root, and says the state is not known', async () => {
-    const { ctx, audits, restoredFiles } = scripted({ restores: [timeout] });
+    const { ctx, audits, restoredFiles, removedPending, queue } = scripted({ restores: [timeout] });
     const error = (await applyModelChange(ctx, plan, false).catch((caught: unknown) => caught)) as LittleSnitchError;
     expect(error).toBeInstanceOf(LittleSnitchError);
     expect(error.kind).toBe('verification-failed');
     expect(error.message).toContain('may still be running as root');
     expect(error.message).toContain('does not know whether the change is in effect');
+    expect(error.message).toContain('It makes no further change for at least a minute, and none while that command is still running.');
+    // The change queue was told to keep the lock, and the file the command may still be reading was left alone.
+    expect(queue.waiting).toBe(true);
+    expect(removedPending).toEqual([]);
     expect(error.message).toContain("sudo '/fake/littlesnitch' restore-model --preserve-terminal-access '/data/backups/backup.json'");
     expect(error.details).toMatchObject({ rolledBack: false, configurationAsBefore: 'unknown', cause: 'timeout' });
     // One restore was started. No second restore and no further read followed.
     expect(restoredFiles).toEqual(['/data/pending/change.json']);
     expect(audits).toMatchObject([{ outcome: 'not-rolled-back', detail: 'timeout, state unknown' }]);
+  });
+
+  it('treats an undo that times out the same way: nothing more is started, here or by a later change', async () => {
+    const { ctx, restoredFiles, removedPending, queue } = scripted({ restores: [() => ({ modelText: 'garbage', method: 'dialog' }), timeout], reads: [changedText] });
+    const error = (await applyModelChange(ctx, plan, false).catch((caught: unknown) => caught)) as LittleSnitchError;
+    expect(error.kind).toBe('verification-failed');
+    expect(error.message).toContain('The undo did not end in time');
+    expect(error.message).toContain('it is not known whether the earlier configuration is back');
+    expect(error.details).toMatchObject({ rolledBack: false, configurationAsBefore: 'unknown' });
+    expect(restoredFiles).toHaveLength(2);
+    expect(queue.waiting).toBe(true);
+    expect(removedPending).toEqual([]);
+  });
+});
+
+describe('applyModelChange when the change lock is lost', () => {
+  it('runs nothing when the lock is gone before the change', async () => {
+    const { ctx, audits, restoredFiles, removedPending } = scripted({ restores: [], lockHeld: [false] });
+    await expect(applyModelChange(ctx, plan, false)).rejects.toMatchObject({ kind: 'busy', message: expect.stringContaining('was lost') });
+    expect(restoredFiles).toEqual([]);
+    expect(removedPending).toEqual(['/data/pending/change.json']);
+    expect(audits).toMatchObject([{ outcome: 'failed', detail: 'lock lost, nothing run' }]);
+  });
+
+  it('does not restore on top of another change when the lock is gone before the undo, and says how to restore by hand', async () => {
+    const { ctx, audits, restoredFiles } = scripted({ restores: [() => ({ modelText: 'garbage', method: 'dialog' })], reads: [changedText], lockHeld: [true, false] });
+    const error = (await applyModelChange(ctx, plan, false).catch((caught: unknown) => caught)) as LittleSnitchError;
+    expect(error.kind).toBe('verification-failed');
+    expect(error.message).toContain('It was NOT undone: The lock that keeps changes apart was lost');
+    expect(error.message).toContain('restore-model --preserve-terminal-access');
+    expect(error.details).toMatchObject({ rolledBack: false, configurationAsBefore: false, lockLost: true });
+    expect(restoredFiles).toHaveLength(1);
+    expect(audits).toMatchObject([{ outcome: 'not-rolled-back' }]);
   });
 });
 
@@ -101,7 +163,7 @@ describe('applyModelChange when a step fails after the change may have run', () 
   it('finds that nothing changed and says so', async () => {
     const { ctx, audits, restoredFiles } = scripted({ restores: [failed], reads: [() => sampleModelText()] });
     const error = (await applyModelChange(ctx, plan, false).catch((caught: unknown) => caught)) as LittleSnitchError;
-    expect(error.message).toContain('is as it was before, so nothing needs to be undone');
+    expect(error.message).toContain('every rule, rule group, profile and preference is as it was before, so nothing needs to be undone');
     expect(error.details).toMatchObject({ rolledBack: false, configurationAsBefore: true, cause: 'verification-failed' });
     expect(restoredFiles).toEqual(['/data/pending/change.json']);
     expect(audits).toMatchObject([{ outcome: 'failed', detail: 'nothing changed' }]);
@@ -141,6 +203,20 @@ describe('applyModelChange when the change log cannot be written', () => {
     const { ctx } = scripted({ restores: [() => ({ modelText: changedText(), method: 'dialog' })], logWritable: false });
     const outcome = await applyModelChange(ctx, plan, false);
     expect(outcome).toMatchObject({ applied: true, warnings: ['The change is in effect and was checked, but it could not be written to the change log.'] });
+  });
+
+  it('reports the change as applied, with a warning, when its temporary file cannot be removed', async () => {
+    const { ctx, removedPending } = scripted({ restores: [() => ({ modelText: changedText(), method: 'dialog' })], pendingRemovable: false });
+    const outcome = await applyModelChange(ctx, plan, false);
+    expect(removedPending).toEqual(['/data/pending/change.json']);
+    expect(outcome).toMatchObject({ applied: true, rewrittenByLittleSnitch: [] });
+    expect(outcome).toMatchObject({ warnings: [expect.stringContaining('the temporary copy of the configuration in the data folder (pending) could not be removed')] });
+  });
+
+  it('passes on what the plan found worth saying, before its own warnings', async () => {
+    const { ctx } = scripted({ restores: [() => ({ modelText: changedText(), method: 'dialog' })], logWritable: false });
+    const outcome = await applyModelChange(ctx, (before) => ({ ...plan(before), warnings: ['from the plan'] }), false);
+    expect(outcome).toMatchObject({ warnings: ['from the plan', 'The change is in effect and was checked, but it could not be written to the change log.'] });
   });
 
   it('still gives the recovery instructions when an undo fails', async () => {

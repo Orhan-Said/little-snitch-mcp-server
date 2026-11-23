@@ -83,6 +83,22 @@ export function activeProfile(model: JsonObject, uid: number | undefined): Activ
   return { known: false };
 }
 
+/**
+ * The configuration without the keys that say which profile is active, in the
+ * global preferences and in every user's. Two configurations that are equal
+ * after this differ in the active profile at most.
+ */
+export function withoutActiveProfile(model: JsonObject): JsonObject {
+  const strip = (section: JsonValue | undefined): JsonValue | undefined =>
+    isObject(section) ? Object.fromEntries(Object.entries(section).filter(([key]) => !ACTIVE_KEY.test(key))) : section;
+  const users = model['users'];
+  return {
+    ...model,
+    ...(model['globalDefaults'] === undefined ? {} : { globalDefaults: strip(model['globalDefaults']) ?? null }),
+    ...(Array.isArray(users) ? { users: users.map((user) => (isObject(user) ? { ...user, defaults: strip(user['defaults']) ?? null } : user)) } : {}),
+  };
+}
+
 /** Finds a profile by its exact name, so that a typo never activates a different profile. */
 export function resolveProfile(model: JsonObject, name: string): ProfileSummary {
   const profiles = summarizeProfiles(model);

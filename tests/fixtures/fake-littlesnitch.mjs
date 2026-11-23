@@ -5,8 +5,10 @@
 // Messages and exit codes marked OBSERVED were seen on Little Snitch 6.5; the rest
 // are placeholders, because the real output is not documented and could not be seen
 // without root.
+import { spawn } from 'node:child_process';
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parse, stringify } from 'lossless-json';
 
 const [stateDir, ...rawArgs] = process.argv.slice(2);
@@ -20,8 +22,12 @@ const saveSettings = () => writeFileSync(file('settings.json'), JSON.stringify(s
 const readModel = () => parse(readFileSync(file('model.json'), 'utf8'));
 const writeModel = (model) => writeFileSync(file('model.json'), stringify(model));
 
-appendFileSync(file('calls.jsonl'), `${JSON.stringify(args)}\n`);
-appendFileSync(file('raw-calls.jsonl'), `${JSON.stringify(rawArgs)}\n`);
+// The second half of a slow restore is the same invocation, so it is recorded once.
+const late = process.env.LSMCP_FAKE_LATE === '1';
+if (!late) {
+  appendFileSync(file('calls.jsonl'), `${JSON.stringify(args)}\n`);
+  appendFileSync(file('raw-calls.jsonl'), `${JSON.stringify(rawArgs)}\n`);
+}
 
 const fail = (code, message) => {
   process.stderr.write(`${message}\n`);
@@ -56,15 +62,16 @@ if (!settings.terminalAccess) {
 
 const BUILTIN_NAMES = { builtinMacOSServices: 'macOS Services', builtinICloudServices: 'iCloud Services' };
 
-/** What a profile or rule group switch does besides the switch itself, when a test asks for it. */
-const applySwitch = (model) => {
+/**
+ * Stores the result of a profile or rule group switch, with whatever a test asked it to do besides.
+ * A fake told that switches do nothing leaves the switch out and still does the rest.
+ */
+const applySwitch = (switched) => {
   const sideEffect = (settings.switchSideEffects ?? []).shift() ?? 'none';
   settings.exportFailures = settings.failExportsAfterSwitch ?? 0;
   settings.failExportsAfterSwitch = 0;
   saveSettings();
-  if (settings.switchesDoNothing === true) {
-    return;
-  }
+  const model = settings.switchesDoNothing === true ? readModel() : switched;
   if (sideEffect === 'drop-first-rule') {
     model.rules = model.rules.slice(1);
   }
@@ -73,6 +80,9 @@ const applySwitch = (model) => {
   }
   if (sideEffect === 'flip-preference') {
     model.globalDefaults = { ...model.globalDefaults, allowCommandLineAccess: false };
+  }
+  if (sideEffect === 'activate-p2') {
+    model.users[0].defaults.activeProfile = 'p2';
   }
   writeModel(model);
 };
@@ -88,6 +98,18 @@ switch (command) {
     break;
   }
   case 'restore-model': {
+    // A slow restore: the work is handed to a process of its own, which goes on after this one was killed for
+    // taking too long, the way a command run as root goes on after the dialog that started it is gone.
+    if ((settings.restoreTakesMs ?? 0) > 0 && !late) {
+      const wait = settings.restoreTakesMs;
+      settings.restoreTakesMs = 0;
+      saveSettings();
+      writeFileSync(file('restore-at-work'), '');
+      const later = `setTimeout(() => { require('node:child_process').spawnSync(process.execPath, process.argv.slice(1), { env: { ...process.env, LSMCP_FAKE_LATE: '1' } }); require('node:fs').rmSync(${JSON.stringify(file('restore-at-work'))}, { force: true }); }, ${Number(wait)});`;
+      spawn(process.execPath, ['-e', later, fileURLToPath(import.meta.url), stateDir, ...rawArgs], { detached: true, stdio: 'ignore' }).unref();
+      setInterval(() => undefined, 1000);
+      await new Promise(() => undefined);
+    }
     const input = rest.filter((word) => !word.startsWith('-')).at(-1);
     if (!rest.includes('--preserve-terminal-access') && !rest.includes('-t')) {
       settings.terminalAccess = false;

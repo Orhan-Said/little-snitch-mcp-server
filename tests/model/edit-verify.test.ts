@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { addRule, buildRule, findRule, removeRule, updateRule, validateNewRule, type NewRuleSpec } from '../../src/model/edit.js';
+import { addRule, buildRule, findRule, isCatchAll, removeRule, updateRule, validateNewRule, type NewRuleSpec } from '../../src/model/edit.js';
 import { parseModelText, rulesOf, serializeModel, toPlain, type JsonObject } from '../../src/model/json.js';
 import { ruleRef } from '../../src/model/rules.js';
 import { compareModels, describeComparison } from '../../src/model/verify.js';
@@ -152,6 +152,22 @@ describe('addRule, removeRule and updateRule', () => {
     const model = sampleModel();
     expect(() => updateRule(model, ref(model, 0), { action: 'allow' }, NOW)).toThrow(/Nothing to change/);
   });
+
+  it('does not turn or raise a rule for any process and any remote, the rule it also refuses to create', () => {
+    const catchAll = (extra: string): JsonObject =>
+      parseModelText(serializeModel(sampleModel()).replace('"rules":[', `"rules":[{"action":"deny","origin":"frontend","uid":501,${extra}"remote":"any"},`));
+    for (const model of [catchAll('"process":"any",'), catchAll('"requiresTrustedSignatureForAnyProcess":true,')]) {
+      const target = ref(model, 0);
+      expect(isCatchAll(rulesOf(model)[0] ?? {})).toBe(true);
+      expect(() => updateRule(model, target, { action: 'allow' }, NOW)).toThrow(/any process and any remote would switch the firewall off.*does not change the action or the priority/);
+      expect(() => updateRule(model, target, { priority: 'high' }, NOW)).toThrow(/does not change the action or the priority/);
+      // A note changes nothing about what the rule does.
+      expect(updateRule(model, target, { notes: 'kept on purpose' }, NOW).after['notes']).toBe('kept on purpose');
+    }
+    expect(isCatchAll({ action: 'allow', process: 'any', remote: 'local-net' })).toBe(false);
+    expect(isCatchAll({ action: 'allow', process: '/usr/bin/curl', remote: 'any' })).toBe(false);
+    expect(isCatchAll({ action: 'allow', remote: 'any' })).toBe(false);
+  });
 });
 
 describe('compareModels', () => {
@@ -164,7 +180,7 @@ describe('compareModels', () => {
     const before = sampleModel();
     const { rule, next } = add(before);
     expect(compareModels(next, reexport(next), { written: [rule] })).toEqual({
-      ok: true, missing: [], unexpected: [], notApplied: [], notRemoved: [], changedSections: [], changedPreferenceKeys: [], otherChanges: [],
+      ok: true, missing: [], unexpected: [], notApplied: [], notRemoved: [], changedSections: [], changedPreferenceKeys: [], otherChanges: [], rewrittenByLittleSnitch: [],
     });
   });
 
@@ -251,7 +267,13 @@ describe('compareModels', () => {
         .replace('"developerTeamNames":{}', '"developerTeamNames":{"MLZF7K7B5R":"Objective Development"}')
         .replace('"knownNEs":[]', '"knownNEs":["com.example.vpn"]'),
     );
-    expect(compareModels(before, after).ok).toBe(true);
+    // They do not fail the comparison, and they do not pass unseen either: each one that differs is named.
+    expect(compareModels(before, after)).toMatchObject({
+      ok: true,
+      changedSections: [],
+      rewrittenByLittleSnitch: ['blocklistStatistics', 'statisticsModelCreationDate', 'lastSeenExecutableByCodeIdentifier', 'developerTeamNames', 'knownNEs', 'bundleVersion', 'factoryRuleSetVersion'],
+    });
+    expect(compareModels(before, parseModelText(serializeModel(before).replace('"knownNEs":[]', '"knownNEs":["com.example.vpn"]'))).rewrittenByLittleSnitch).toEqual(['knownNEs']);
     // The table of code signing requirements decides which program a rule applies to. It is not among them.
     const tampered = parseModelText(serializeModel(before).replace('"codeRequirements":{}', '"codeRequirements":{"/x":"anchor apple"}'));
     expect(compareModels(before, tampered)).toMatchObject({ ok: false, changedSections: ['codeRequirements'] });
@@ -263,6 +285,9 @@ describe('compareModels', () => {
     // Seen on Little Snitch 6.5: the map position came back under keys that start with a small letter.
     const renamed = parseModelText(text.replace('"GeoViewMyLocationLatitude":40.4,"GeoViewMyLocationLongitude":49.8', '"geoViewMyLocationLatitude":40.4,"geoViewMyLocationLongitude":49.8'));
     expect(compareModels(before, renamed).ok).toBe(true);
+    // Only the spellings that were seen are accepted: another key that differs from a listed one by letter case is a difference.
+    const lookalike = parseModelText(text.replace('"pidOfLSCShowingWelcomeWindow":0', '"pidOfLSCShowingWelcomeWindow":0,"PIDOfLSCShowingWelcomeWindow":1'));
+    expect(compareModels(before, lookalike)).toMatchObject({ ok: false, changedPreferenceKeys: ['users[uid 501].defaults.PIDOfLSCShowingWelcomeWindow'] });
     // Also seen: a restore run as plain root added a record for the root user. That is a difference.
     const withRoot = parseModelText(text.replace('"users":[', '"users":[{"uid":0,"shortName":"root","fullName":"System Administrator","defaults":{}},'));
     expect(compareModels(before, withRoot)).toMatchObject({ ok: false, changedSections: ['users'], changedPreferenceKeys: ['users[uid 0].defaults'] });

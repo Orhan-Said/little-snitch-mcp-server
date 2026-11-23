@@ -92,21 +92,65 @@ describe('set_active_profile', () => {
     expect(data.applied).toBeUndefined();
     expect(data).toMatchObject({ accepted: true, activeProfile: null, confirmedByReadBack: false, partsThatChanged: [] });
     expect(data.note).toContain('the switch itself is not confirmed');
+    // The change log says the same as the answer: accepted, not applied.
+    expect(auditLog(h)).toMatchObject([{ tool: 'set_active_profile', outcome: 'accepted' }]);
   });
 
   it('puts the earlier configuration back when the switch also lost a rule', async () => {
     const h = await start({ switchSideEffects: ['drop-first-rule'] });
     const { data } = await h.call('set_active_profile', { profile: 'Home' });
     expect(data.error.kind).toBe('verification-failed');
-    expect(data.error.message).toContain(
-      'is not what the switch should produce (1 rule(s) missing; these parts differ: users; preference keys that differ: users[uid 501].defaults.activeProfile)',
-    );
+    // The profile key itself changed as asked. What is wrong is everything else that changed.
+    expect(data.error.message).toContain('is not what the switch should produce (1 rule(s) missing)');
     expect(data.error.message).toContain('The earlier configuration was put back and checked');
     expect(data.error.details).toMatchObject({ rolledBack: true, configurationAsBefore: true });
     expect(commands(h)).toEqual(['export-model', 'profile', 'export-model', 'restore-model', 'export-model']);
     expect(refs(h)).toEqual(ORIGINAL_REFS);
     expect(active(h)).toBe('Work');
     expect(auditLog(h)).toMatchObject([{ outcome: 'rolled-back' }]);
+  });
+
+  it('puts the earlier configuration back when the switch also switched a rule group', async () => {
+    const h = await start({ switchSideEffects: ['switch-other-group'] });
+    const { data, isError } = await h.call('set_active_profile', { profile: 'Home' });
+    expect(isError).toBe(true);
+    expect(data.error.kind).toBe('verification-failed');
+    expect(data.error.message).toContain('is not what the switch should produce (these parts differ: groups)');
+    expect(data.error.details.otherChanges).toEqual(['The rule group "Work rules" is off and should be on.']);
+    expect(data.error.details).toMatchObject({ rolledBack: true, configurationAsBefore: true });
+    expect(groupState(h, 'aaaaad')).toBe(true);
+    expect(active(h)).toBe('Work');
+    expect(auditLog(h)).toMatchObject([{ outcome: 'rolled-back' }]);
+  });
+
+  it('puts the earlier configuration back when the switch also changed a preference', async () => {
+    const h = await start({ switchSideEffects: ['flip-preference'] });
+    const { data } = await h.call('set_active_profile', { profile: null });
+    expect(data.error.details.changedPreferenceKeys).toEqual(['globalDefaults.allowCommandLineAccess']);
+    expect(data.error.details).toMatchObject({ rolledBack: true, configurationAsBefore: true });
+    expect(h.modelText()).toContain('"allowCommandLineAccess":true');
+    expect(active(h)).toBe('Work');
+  });
+
+  it('puts the earlier configuration back when another profile than the one asked for became active', async () => {
+    // The fake activates by name; with two profiles of one name out of the question, it is told the wrong name through a stale configuration.
+    const h = await start({ modelText: sampleModelText().replace('"activeProfile": "p2"', '"activeProfile": "p1"'), switchesDoNothing: true, switchSideEffects: ['activate-p2'] });
+    const { data } = await h.call('set_active_profile', { profile: null });
+    expect(data.error.kind).toBe('verification-failed');
+    expect(data.error.details).toMatchObject({ rolledBack: true, configurationAsBefore: true, changedPreferenceKeys: ['users[uid 501].defaults.activeProfile'] });
+    expect(active(h)).toBe('Home');
+  });
+
+  it('does not accept an unconfirmed switch that changed something else: it is undone', async () => {
+    const h = await start({
+      modelText: sampleModelText().replace('"activeProfile": "p2"', '"somethingElse": 1'),
+      switchesDoNothing: true,
+      switchSideEffects: ['flip-preference'],
+    });
+    const { data, isError } = await h.call('set_active_profile', { profile: null });
+    expect(isError).toBe(true);
+    expect(data.error.details).toMatchObject({ rolledBack: true, changedPreferenceKeys: ['globalDefaults.allowCommandLineAccess'] });
+    expect(h.modelText()).toContain('"allowCommandLineAccess":true');
   });
 
   it('reads again and undoes the switch when the read-back failed', async () => {
@@ -121,7 +165,7 @@ describe('set_active_profile', () => {
 });
 
 describe('what the owner switched off in Little Snitch itself', () => {
-  const locked = (key: string): string => sampleModelText().replace('"markNewRulesAsUnapproved": false', `"markNewRulesAsUnapproved": false, "${key}": false`);
+  const locked = (key: string, value = 'false'): string => sampleModelText().replace(`"${key}": true`, `"${key}": ${value}`);
 
   it('does not switch a profile when "Allow Profile Switching" is off', async () => {
     const h = await start({ modelText: locked('allowProfileSwitching') });
@@ -137,6 +181,27 @@ describe('what the owner switched off in Little Snitch itself', () => {
     expect(group.data.error.kind).toBe('capability-disabled');
     expect(group.data.error.remedy).toContain('Settings > Security');
     expect((await h.call('set_active_profile', { profile: 'Home' })).data.applied).toBe(true);
+  });
+
+  it('takes a 0 for "off", and refuses a value it does not understand', async () => {
+    const zero = await start({ modelText: locked('allowProfileSwitching', '0') });
+    expect((await zero.call('set_active_profile', { profile: 'Home' })).data.error.message).toContain('"Allow Profile Switching" is switched off');
+    await zero.close();
+    const odd = await start({ modelText: locked('allowProfileSwitching', '"sometimes"') });
+    const { data } = await odd.call('set_active_profile', { profile: 'Home' });
+    expect(data.error.kind).toBe('capability-disabled');
+    expect(data.error.message).toContain('has a value in the configuration that this server does not understand');
+    expect(odd.calls()).toEqual([['export-model']]);
+  });
+
+  it('switches when the switch is not in the configuration, and says in the result that it could not respect it', async () => {
+    const h = await start({ modelText: sampleModelText().replace('"allowRuleAndProfileEditing": true, "allowProfileSwitching": true, ', '') });
+    const profile = await h.call('set_active_profile', { profile: 'Home' });
+    expect(profile.data.applied).toBe(true);
+    expect(profile.data.warnings).toEqual([expect.stringContaining('"Allow Profile Switching" was not found in the configuration for this user')]);
+    const group = await h.call('set_rule_group_enabled', { group: 'iCloud Services', enabled: true });
+    expect(group.data.applied).toBe(true);
+    expect(group.data.warnings).toEqual([expect.stringContaining('"Allow Rule Editing" was not found')]);
   });
 });
 

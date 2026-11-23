@@ -13,7 +13,11 @@ export interface BackupInfo {
 export interface AuditEntry {
   readonly tool: string;
   readonly summary: string;
-  readonly outcome: 'applied' | 'failed' | 'rolled-back' | 'not-rolled-back';
+  /**
+   * "applied": made and proven by reading back. "accepted": Little Snitch took the
+   * request and nothing else changed, but the configuration does not show the result.
+   */
+  readonly outcome: 'applied' | 'accepted' | 'failed' | 'rolled-back' | 'not-rolled-back';
   readonly method?: string;
   readonly backup?: string;
   readonly detail?: string;
@@ -30,8 +34,13 @@ export interface Store {
   readBackup(name: string): Promise<{ readonly info: BackupInfo; readonly text: string }>;
   /** Writes the configuration that is about to be applied; the caller removes it afterwards. */
   writePending(text: string): Promise<string>;
-  /** Never fails: a file that cannot be removed is left for the next start. */
-  removePending(file: string): Promise<void>;
+  /** Never fails. Returns false when the file is still there afterwards. */
+  removePending(file: string): Promise<boolean>;
+  /**
+   * Removes every file a change left in the pending folder. Call it only while
+   * holding the change lock, when no change can be using one. Never fails.
+   */
+  clearPending(): Promise<void>;
   /**
    * Writes one line to the change log. Never fails, because a full disk must
    * not turn a finished change into an error. Returns false when the line could not be written.
@@ -42,6 +51,7 @@ export interface Store {
 
 const KEEP_BACKUPS = 50;
 const BACKUP_NAME = /^\d{8}T\d{6}Z-[a-z0-9-]{1,40}-[0-9a-f]{6}\.json$/;
+const PENDING_NAME = /^[0-9a-f]{16}\.json$/;
 /**
  * Backups hold the whole firewall configuration, so the folder is readable by
  * its owner only (0700) and each file is 0600.
@@ -111,9 +121,20 @@ export function createStore(dataDir: string, now: () => Date = () => new Date())
     },
 
     async removePending(file) {
-      if (path.dirname(file) === pendingDir) {
-        await rm(file, { force: true }).catch(() => undefined);
+      if (path.dirname(file) !== pendingDir) {
+        return false;
       }
+      try {
+        await rm(file, { force: true });
+        return true;
+      } catch {
+        return false;
+      }
+    },
+
+    async clearPending() {
+      const names = await readdir(pendingDir).catch(() => [] as string[]);
+      await Promise.all(names.filter((name) => PENDING_NAME.test(name)).map((name) => rm(path.join(pendingDir, name), { force: true }).catch(() => undefined)));
     },
 
     async audit(entry) {

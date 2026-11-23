@@ -38,6 +38,9 @@ const HIDDEN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 
 const invalid = (message: string): LittleSnitchError => new LittleSnitchError('invalid-input', message);
 
+const CATCH_ALL =
+  'A rule for any process and any remote would switch the firewall off (allow) or cut the Mac off from the network (deny).';
+
 function assertPlainNotes(notes: string): void {
   if (notes.length > 500 || HIDDEN.test(notes)) {
     throw invalid('Notes must be at most 500 characters on one line, without control or invisible characters.');
@@ -119,10 +122,7 @@ export function validateNewRule(spec: NewRuleSpec): void {
     }
   }
   if (spec.process === 'any' && spec.remote === 'any') {
-    throw invalid(
-      'A rule for any process and any remote would switch the firewall off (allow) or cut the Mac off from the network (deny). ' +
-        'This server does not create it; make such a rule in Little Snitch itself.',
-    );
+    throw invalid(`${CATCH_ALL} This server does not create it; make such a rule in Little Snitch itself.`);
   }
   if (spec.ports !== undefined) {
     assertPorts(spec.ports);
@@ -195,6 +195,12 @@ export function findRule(model: JsonObject, ref: string): { readonly index: numb
   throw new LittleSnitchError('not-found', `No rule has the reference ${ref}. Rules may have changed; list them again.`);
 }
 
+/** True for a rule that covers every process and every remote. */
+export function isCatchAll(rule: JsonObject): boolean {
+  const anyProcess = asString(rule['process']) === 'any' || (rule['process'] === undefined && asBoolean(rule['requiresTrustedSignatureForAnyProcess']) === true);
+  return anyProcess && asString(rule['remote']) === 'any';
+}
+
 function assertEditable(rule: JsonObject, ref: string): void {
   if (asBoolean(rule['protected']) === true || (rule['factoryID'] !== undefined && rule['factoryID'] !== null)) {
     throw new LittleSnitchError('protected', `Rule ${ref} is a protected or factory rule. This server does not change those; use Little Snitch itself.`);
@@ -225,6 +231,9 @@ export function updateRule(
   };
   if (Object.keys(changes).length === 0) {
     throw invalid('Nothing to change: the rule already has these values.');
+  }
+  if (isCatchAll(rule) && (changes['action'] !== undefined || changes['priority'] !== undefined)) {
+    throw invalid(`${CATCH_ALL} This server does not change the action or the priority of such a rule; do it in Little Snitch itself.`);
   }
   const encoding = detectEncoding(rule['modificationDate']);
   const merged: JsonObject = {

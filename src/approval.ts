@@ -1,5 +1,5 @@
 import { LittleSnitchError } from './errors.js';
-import { asNumber, asString, type JsonObject } from './model/json.js';
+import { asNumber, asString, toPlain, type JsonObject, type JsonValue } from './model/json.js';
 import { remoteOf } from './model/rules.js';
 
 /**
@@ -36,6 +36,73 @@ export function shown(text: string, max: number = MAX_PATH_TEXT): string {
   return `${clean.slice(0, head)} ... ${clean.slice(-tail)}`;
 }
 
+const REMOTE_KEYS: readonly string[] = ['remote', 'remote-domains', 'remote-hosts', 'remote-addresses'];
+const MAX_SPECIAL_REMOTE = 40;
+const MAX_REMOTE_VALUE = 253;
+const MAX_ACTION = 20;
+const MAX_PORTS = 40;
+const MAX_PROTOCOL = 20;
+
+/** A value written as text or as a number, as text. Anything else has no text. */
+function textOf(value: JsonValue | undefined): string | undefined {
+  const plain = value === undefined ? undefined : toPlain(value);
+  return typeof plain === 'string' ? plain : typeof plain === 'number' ? String(plain) : undefined;
+}
+
+/** True when `shown` would print the text exactly as it is: nothing hidden, nothing cut, no space changed. */
+const showsExactly = (text: string, max: number): boolean => shown(text, max) === text;
+
+/**
+ * Says why a rule cannot be shown exactly in an approval prompt, or nothing
+ * when it can. Rules that are already in Little Snitch may hold anything, so
+ * every field the prompt prints is checked: a field that would be left out,
+ * cut, or printed differently from what the rule holds makes the rule one that
+ * nobody could approve knowingly. A long process path is the one exception: it
+ * is shown with its beginning and its end.
+ */
+export function unshowable(rule: JsonObject): string | undefined {
+  const remoteKeys = Object.keys(rule).filter((key) => /^remote/i.test(key));
+  const unknownKey = remoteKeys.find((key) => !REMOTE_KEYS.includes(key));
+  if (unknownKey !== undefined) {
+    return `a remote field this server does not know ("${shown(unknownKey, 40)}")`;
+  }
+  if (remoteKeys.length > 1) {
+    return `more than one remote field (${remoteKeys.join(', ')})`;
+  }
+  for (const key of remoteKeys) {
+    const value = rule[key];
+    const entries = typeof value === 'string' ? [value] : Array.isArray(value) && key !== 'remote' ? value : undefined;
+    if (entries === undefined || entries.length === 0 || !entries.every((entry): entry is string => typeof entry === 'string')) {
+      return `a "${key}" value that is not text or a list of texts`;
+    }
+    if (!entries.every((entry) => entry !== '' && showsExactly(entry, key === 'remote' ? MAX_SPECIAL_REMOTE : MAX_REMOTE_VALUE))) {
+      return `a "${key}" entry that is empty, too long, or holds hidden characters or unusual spaces`;
+    }
+  }
+  for (const [key, max] of [['action', MAX_ACTION], ['ports', MAX_PORTS], ['protocol', MAX_PROTOCOL]] as const) {
+    const text = textOf(rule[key]);
+    if (rule[key] !== undefined && (text === undefined || !showsExactly(text, max))) {
+      return `a "${key}" value that cannot be shown exactly`;
+    }
+  }
+  if (rule['direction'] !== undefined && !['outgoing', 'incoming', 'both'].includes(asString(rule['direction']) ?? '')) {
+    return 'a direction this server does not know';
+  }
+  if (rule['priority'] !== undefined && !['regular', 'high'].includes(asString(rule['priority']) ?? '')) {
+    return 'a priority this server does not know';
+  }
+  for (const key of ['process', 'via'] as const) {
+    const text = asString(rule[key]);
+    if (rule[key] !== undefined && (text === undefined || hasHiddenCharacters(text))) {
+      return `a "${key}" value that is not plain text`;
+    }
+  }
+  if (rule['notes'] !== undefined && asString(rule['notes']) === undefined) {
+    return 'notes that are not text';
+  }
+  return undefined;
+}
+
 /** The remote in words. `complete` is false when the list was too long to show whole. */
 export function remoteText(rule: JsonObject): { readonly text: string; readonly complete: boolean } {
   const remote = remoteOf(rule);
@@ -43,16 +110,16 @@ export function remoteText(rule: JsonObject): { readonly text: string; readonly 
     return { text: 'ANY remote', complete: true };
   }
   if (remote.kind === 'special') {
-    return { text: `the "${shown(remote.value, 40)}" remotes`, complete: true };
+    return { text: `the "${shown(remote.value, MAX_SPECIAL_REMOTE)}" remotes`, complete: showsExactly(remote.value, MAX_SPECIAL_REMOTE) };
   }
   if (remote.kind === 'unspecified') {
     return { text: 'an unspecified remote', complete: true };
   }
   const label = remote.kind === 'domains' ? 'the domains' : remote.kind === 'hosts' ? 'the hosts' : 'the addresses';
-  const values = remote.values.map((value) => shown(value, 253));
+  const values = remote.values.map((value) => shown(value, MAX_REMOTE_VALUE));
   const whole = `${label} ${values.join(', ')}`;
   if (whole.length <= MAX_REMOTE_TEXT) {
-    return { text: whole, complete: true };
+    return { text: whole, complete: remote.values.every((value) => showsExactly(value, MAX_REMOTE_VALUE)) };
   }
   const fitting: string[] = [];
   for (const value of values) {
@@ -74,17 +141,17 @@ export function ruleText(rule: JsonObject, viewerUid?: number): string {
   const direction = way === 'incoming' ? 'incoming connections from' : way === 'both' ? 'connections in both directions with' : 'connections to';
   const process = asString(rule['process']);
   const via = asString(rule['via']);
-  const ports = asString(rule['ports']);
-  const protocol = asString(rule['protocol']);
+  const ports = textOf(rule['ports']);
+  const protocol = textOf(rule['protocol']);
   const extras = [
-    ...(ports === undefined || ports === 'any' ? [] : [`ports ${shown(ports, 20)}`]),
-    ...(protocol === undefined ? [] : [`protocol ${shown(protocol, 20)}`]),
+    ...(ports === undefined || ports === 'any' ? [] : [`ports ${shown(ports, MAX_PORTS)}`]),
+    ...(protocol === undefined ? [] : [`protocol ${shown(protocol, MAX_PROTOCOL)}`]),
     ...(asString(rule['priority']) === 'high' ? ['high priority'] : []),
   ];
   const notes = asString(rule['notes']);
   const uid = asNumber(rule['uid']);
   return (
-    `${shown(action, 20)} ${direction} ${remoteText(rule).text} ` +
+    `${shown(action, MAX_ACTION)} ${direction} ${remoteText(rule).text} ` +
     `for ${process === 'any' ? 'ANY process' : process !== undefined ? shown(process) : rule['requiresTrustedSignatureForAnyProcess'] === true ? 'ANY process with a trusted signature' : 'an unspecified process'}` +
     (via === undefined ? '' : ` via ${shown(via)}`) +
     (extras.length === 0 ? '' : ` (${extras.join(', ')})`) +
@@ -105,16 +172,25 @@ export function describeChanges(before: JsonObject, after: JsonObject): readonly
 }
 
 /**
- * Refuses a rule whose remote list is too long to show whole in the approval
- * prompt. This applies to a new rule and to changing or removing an existing
- * one: nobody can approve knowingly what they cannot see.
+ * Refuses a rule that cannot be shown whole and exactly in the approval
+ * prompt: one whose remote list is too long, and one that holds data the
+ * prompt would leave out, cut or print differently. This applies to a new rule
+ * and to changing or removing an existing one: nobody can approve knowingly
+ * what they cannot see.
  */
 export function assertFitsPrompt(rule: JsonObject, existing: boolean = false): void {
+  const elsewhere = existing ? 'Change or remove it in Little Snitch itself.' : 'Split it into several rules.';
+  const reason = unshowable(rule);
+  if (reason !== undefined) {
+    throw new LittleSnitchError(
+      'invalid-input',
+      `This rule holds ${reason}, so an approval prompt could not show you exactly what the rule is. ${existing ? elsewhere : 'Give the rule in the form the tool describes.'}`,
+    );
+  }
   if (!remoteText(rule).complete) {
     throw new LittleSnitchError(
       'invalid-input',
-      `This rule names more remotes than fit into one approval prompt (${MAX_REMOTE_TEXT} characters), so you could not see all of them before approving. ` +
-        (existing ? 'Change or remove it in Little Snitch itself.' : 'Split it into several rules.'),
+      `This rule names more remotes than fit into one approval prompt (${MAX_REMOTE_TEXT} characters), so you could not see all of them before approving. ${elsewhere}`,
     );
   }
 }

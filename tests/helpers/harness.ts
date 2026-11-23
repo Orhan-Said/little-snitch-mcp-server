@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -53,13 +53,20 @@ export interface HarnessOptions {
   readonly failExportsAfterSwitch?: number;
   /** What each profile or rule group switch does besides the switch, in order. */
   readonly switchSideEffects?: readonly string[];
+  /** How long the fake takes over its first restore-model, in milliseconds: it hands the work to a process that outlives it. */
+  readonly restoreTakesMs?: number;
+  /** Time the server gives one command, and the time it waits after one that did not end. */
+  readonly commandTimeoutMs?: number;
+  readonly settleMs?: number;
 }
 
 export interface Harness {
   readonly client: Client;
   readonly dataDir: string;
-  /** The lock every server of this (pretend) macOS user shares. */
+  /** The lock this test's servers share. A real server uses one file for the whole Mac; each test has its own. */
   readonly lockFile: string;
+  /** True while the fake's slow restore is still at work. */
+  restoreAtWork(): boolean;
   /** The fake firewall's configuration as it is now. */
   model(): JsonObject;
   modelText(): string;
@@ -89,6 +96,7 @@ export function installFake(root: string, options: HarnessOptions = {}): { reado
       failExportsAfterRestore: options.failExportsAfterRestore ?? 0,
       failExportsAfterSwitch: options.failExportsAfterSwitch ?? 0,
       switchSideEffects: options.switchSideEffects ?? [],
+      restoreTakesMs: options.restoreTakesMs ?? 0,
     }),
   );
   write('traffic.csv', TRAFFIC_CSV);
@@ -107,8 +115,16 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
   const { cliPath, stateDir } = installFake(root, options);
   const dataDir = path.join(root, 'data');
   const allow = options.allow === undefined ? [] : options.allow === 'all' ? ['all'] : options.allow;
-  const config = loadConfig({}, ['--cli-path', cliPath, '--elevation', 'none', '--data-dir', dataDir, '--allow', allow.join(',') || 'none'], root);
-  const server = createServer(createContext(config, { now: () => NOW, uid: 501 }));
+  const loaded = loadConfig({}, ['--cli-path', cliPath, '--elevation', 'none', '--data-dir', dataDir, '--allow', allow.join(',') || 'none'], root);
+  const config = {
+    ...loaded,
+    lockFile: path.join(root, 'change.lock'),
+    ...(options.commandTimeoutMs === undefined ? {} : { commandTimeoutMs: options.commandTimeoutMs }),
+    ...(options.settleMs === undefined ? {} : { settleMs: options.settleMs }),
+  };
+  // The fake's slow restore says that it is at work with a file, the way the real one shows in the process list.
+  const restoreAtWork = (): boolean => existsSync(path.join(stateDir, 'restore-at-work'));
+  const server = createServer(createContext(config, { now: () => NOW, uid: 501, commandRunning: async () => restoreAtWork() }));
   const client = new Client({ name: 'test-client', version: '1.0.0' });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
@@ -123,6 +139,7 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
     client,
     dataDir,
     lockFile: config.lockFile,
+    restoreAtWork,
     modelText,
     model: () => parseModelText(modelText()),
     calls: () => readCalls('calls.jsonl'),

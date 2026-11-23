@@ -19,6 +19,8 @@ export interface PlannedChange {
   readonly removedRefs: readonly string[];
   /** What a dry run returns. */
   readonly preview: unknown;
+  /** Things the person should know that were found while planning. They go into the result. */
+  readonly warnings?: readonly string[];
 }
 
 /** What is needed to get back to the configuration from before a change. */
@@ -42,18 +44,25 @@ export interface RestoreRequest extends RecoveryRequest {
   readonly removedRefs?: readonly string[];
 }
 
-export interface AppliedChange {
-  readonly applied: true;
+export interface Restored {
   readonly after: JsonObject;
-  readonly backup: string;
   readonly method: string;
   /** Things that went wrong after the change was made and checked, such as a change log that could not be written. */
   readonly warnings: readonly string[];
+  /** Parts Little Snitch keeps for itself that came back different. They are not compared, only reported. */
+  readonly rewrittenByLittleSnitch: readonly string[];
+}
+
+export interface AppliedChange extends Restored {
+  readonly applied: true;
+  readonly backup: string;
 }
 
 export type ChangeOutcome = AppliedChange | { readonly applied: false; readonly dryRun: true; readonly preview: unknown };
 
 export const NOT_LOGGED = 'The change is in effect and was checked, but it could not be written to the change log.';
+export const NOT_CLEARED =
+  'The change is in effect and was checked, but the temporary copy of the configuration in the data folder (pending) could not be removed. It is removed before the next change.';
 
 /** Errors that are raised before the tool was started, so the configuration cannot have changed. */
 const NOTHING_RAN: readonly ErrorKind[] = [
@@ -84,12 +93,34 @@ export interface Recovery {
   readonly details: Record<string, unknown>;
 }
 
+const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+const isTimeout = (error: unknown): boolean => error instanceof LittleSnitchError && error.kind === 'timeout';
+
+/**
+ * Stops right before a command that changes Little Snitch when the change lock
+ * is gone. Nothing of that command has run at this point.
+ */
+export async function requireLock(ctx: Context, request: Pick<RecoveryRequest, 'tool' | 'summary' | 'backup'>): Promise<void> {
+  try {
+    ctx.changes.assertLockHeld();
+  } catch (error) {
+    await ctx.store.audit({ tool: request.tool, summary: request.summary, outcome: 'failed', backup: request.backup.name, detail: 'lock lost, nothing run' });
+    throw error;
+  }
+}
+
 /** Restores the configuration from before the change and checks the whole configuration against what it was. */
 export async function undo(ctx: Context, request: RecoveryRequest): Promise<Recovery> {
   const fail = async (sentence: string, details: Record<string, unknown>): Promise<Recovery> => {
     await ctx.store.audit({ tool: request.tool, summary: request.summary, outcome: 'not-rolled-back', backup: request.backup.name });
     return { asBefore: false, rolledBack: false, sentence: `${sentence} ${manualRestore(ctx, request)}`, details };
   };
+  try {
+    ctx.changes.assertLockHeld();
+  } catch (error) {
+    // Another change may be running now. A restore on top of it could wipe it out.
+    return fail(`It was NOT undone: ${messageOf(error)}`, { lockLost: true });
+  }
   // The undo restores what this server read before the change, written out afresh from memory.
   // It does not depend on the backup file still being what it was.
   let undoneText: string;
@@ -98,9 +129,16 @@ export async function undo(ctx: Context, request: RecoveryRequest): Promise<Reco
     file = await ctx.store.writePending(request.beforeText);
     undoneText = (await ctx.cli.restoreModel(file, sha256(request.beforeText), prompts.undo)).modelText;
   } catch (error) {
-    return fail(`It could NOT be undone automatically (${error instanceof Error ? error.message : String(error)}).`, {});
+    if (isTimeout(error)) {
+      // The undo itself may still be running as root. Nothing more is started, here or by a later change.
+      ctx.changes.commandMayStillRun();
+      return fail(`The undo did not end in time (${messageOf(error)}), so it is not known whether the earlier configuration is back. Wait a minute, then look at the configuration.`, {
+        configurationAsBefore: 'unknown',
+      });
+    }
+    return fail(`It could NOT be undone automatically (${messageOf(error)}).`, {});
   } finally {
-    if (file !== undefined) {
+    if (file !== undefined && !ctx.changes.waitingForCommand()) {
       await ctx.store.removePending(file);
     }
   }
@@ -108,7 +146,7 @@ export async function undo(ctx: Context, request: RecoveryRequest): Promise<Reco
   try {
     check = compareModels(request.before, parseModelText(undoneText));
   } catch (error) {
-    return fail(`The backup was restored, but the configuration could not be read afterwards (${error instanceof Error ? error.message : String(error)}).`, {});
+    return fail(`The backup was restored, but the configuration could not be read afterwards (${messageOf(error)}).`, {});
   }
   if (!check.ok) {
     return fail(`The backup was restored, but the configuration still differs from before (${describeComparison(check)}).`, {
@@ -116,7 +154,12 @@ export async function undo(ctx: Context, request: RecoveryRequest): Promise<Reco
     });
   }
   await ctx.store.audit({ tool: request.tool, summary: request.summary, outcome: 'rolled-back', backup: request.backup.name });
-  return { asBefore: true, rolledBack: true, sentence: 'The earlier configuration was put back and checked: it is as it was before.', details: {} };
+  return {
+    asBefore: true,
+    rolledBack: true,
+    sentence: 'The earlier configuration was put back and checked: every rule, rule group, profile and preference is as it was before.',
+    details: {},
+  };
 }
 
 /** After a failure that may have left a change behind: reads the configuration again and undoes whatever differs. */
@@ -126,7 +169,12 @@ async function recover(ctx: Context, request: RecoveryRequest): Promise<Recovery
     const { model } = await ctx.models.fresh();
     if (compareModels(request.before, model).ok) {
       await ctx.store.audit({ tool: request.tool, summary: request.summary, outcome: 'failed', backup: request.backup.name, detail: 'nothing changed' });
-      return { asBefore: true, rolledBack: false, sentence: 'The configuration was read again and is as it was before, so nothing needs to be undone.', details: {} };
+      return {
+        asBefore: true,
+        rolledBack: false,
+        sentence: 'The configuration was read again: every rule, rule group, profile and preference is as it was before, so nothing needs to be undone.',
+        details: {},
+      };
     }
   } catch {
     // The configuration could not be read. Restoring the backup is the one way left to reach a known state.
@@ -135,7 +183,7 @@ async function recover(ctx: Context, request: RecoveryRequest): Promise<Recovery
 }
 
 export function recoveryDetails(request: RecoveryRequest, recovery: Recovery, extra: Record<string, unknown> = {}): Record<string, unknown> {
-  return { ...extra, ...recovery.details, backup: request.backup.name, rolledBack: recovery.rolledBack, configurationAsBefore: recovery.asBefore };
+  return { ...extra, backup: request.backup.name, rolledBack: recovery.rolledBack, configurationAsBefore: recovery.asBefore, ...recovery.details };
 }
 
 /**
@@ -144,24 +192,28 @@ export function recoveryDetails(request: RecoveryRequest, recovery: Recovery, ex
  *
  * - Nothing was started (a cancelled prompt, a refused file): the error is passed on.
  * - The step timed out: the command may still be running as root, and a second
- *   restore on top of it could collide with it. So nothing more is started, and
- *   the error says that the state is not known and how to restore by hand.
+ *   command on top of it could collide with it. So nothing more is started for
+ *   this change, the change queue is told to keep the lock and to refuse every
+ *   later change until the command is gone, and the error says that the state
+ *   is not known and how to restore by hand.
  * - Anything else: the configuration is read again and, if it differs, undone.
  */
 export async function failAfterWrite(ctx: Context, request: RecoveryRequest, error: unknown): Promise<never> {
   const kind: ErrorKind | 'internal' = error instanceof LittleSnitchError ? error.kind : 'internal';
-  const message = error instanceof Error ? error.message : String(error);
+  const message = messageOf(error);
   if (error instanceof LittleSnitchError && NOTHING_RAN.includes(error.kind)) {
     await ctx.store.audit({ tool: request.tool, summary: request.summary, outcome: 'failed', backup: request.backup.name, detail: kind });
     throw error;
   }
   if (kind === 'timeout') {
+    ctx.changes.commandMayStillRun();
     ctx.models.clear();
     await ctx.store.audit({ tool: request.tool, summary: request.summary, outcome: 'not-rolled-back', backup: request.backup.name, detail: 'timeout, state unknown' });
     throw new LittleSnitchError(
       'verification-failed',
       `${message} The command that was started may still be running as root, so this server did not start a restore on top of it, and it does not know whether the change is in effect. ` +
-        `Wait a minute, then look at the configuration again. ${manualRestore(ctx, request)}`,
+        'It makes no further change for at least a minute, and none while that command is still running. ' +
+        `Then look at the configuration again. ${manualRestore(ctx, request)}`,
       { details: { backup: request.backup.name, rolledBack: false, configurationAsBefore: 'unknown', cause: kind } },
     );
   }
@@ -179,10 +231,8 @@ export async function failAfterWrite(ctx: Context, request: RecoveryRequest, err
  * it is as it was before, it could not be brought back, or (after a timeout) it
  * is not known. The last two come with the command to restore by hand.
  */
-export async function restoreVerified(
-  ctx: Context,
-  request: RestoreRequest,
-): Promise<{ readonly after: JsonObject; readonly method: string; readonly warnings: readonly string[] }> {
+export async function restoreVerified(ctx: Context, request: RestoreRequest): Promise<Restored> {
+  await requireLock(ctx, request);
   ctx.models.clear();
   let restored: { readonly modelText: string; readonly method: string };
   let after: JsonObject;
@@ -200,7 +250,7 @@ export async function restoreVerified(
   if (comparison.ok) {
     ctx.models.put(after);
     const logged = await ctx.store.audit({ tool: request.tool, summary: request.summary, outcome: 'applied', method: restored.method, backup: request.backup.name });
-    return { after, method: restored.method, warnings: logged ? [] : [NOT_LOGGED] };
+    return { after, method: restored.method, warnings: logged ? [] : [NOT_LOGGED], rewrittenByLittleSnitch: comparison.rewrittenByLittleSnitch };
   }
 
   const problem = comparisonDetails(comparison);
@@ -208,7 +258,7 @@ export async function restoreVerified(
     await ctx.store.audit({ tool: request.tool, summary: request.summary, outcome: 'failed', backup: request.backup.name, detail: 'not accepted, nothing changed' });
     throw new LittleSnitchError(
       'verification-failed',
-      'Little Snitch did not take the change: the configuration is the same as before. Nothing needs to be undone.',
+      'Little Snitch did not take the change: every rule, rule group, profile and preference is the same as before. Nothing needs to be undone.',
       { details: { ...problem, backup: request.backup.name, rolledBack: false, configurationAsBefore: true } },
     );
   }
@@ -221,12 +271,33 @@ export async function restoreVerified(
 }
 
 /**
+ * Writes `text` to a file of its own, restores it and proves the result. The
+ * file is removed afterwards, except after a timeout: then the command may
+ * still be reading it, and it stays until the next change clears the folder.
+ */
+export async function restoreText(ctx: Context, text: string, request: Omit<RestoreRequest, 'file' | 'fileSha256'>): Promise<Restored> {
+  const pending = await ctx.store.writePending(text);
+  let restored: Restored;
+  try {
+    restored = await restoreVerified(ctx, { ...request, file: pending, fileSha256: sha256(text) });
+  } catch (error) {
+    if (!ctx.changes.waitingForCommand()) {
+      await ctx.store.removePending(pending);
+    }
+    throw error;
+  }
+  const cleared = await ctx.store.removePending(pending);
+  return cleared ? restored : { ...restored, warnings: [...restored.warnings, NOT_CLEARED] };
+}
+
+/**
  * The only way this server changes rules. Little Snitch has no command to edit
  * one rule; its documented route is to export the configuration, change it and
  * restore it. So, one change at a time: read the configuration, work out the
  * change, save a backup, restore the changed configuration, read it back, and
- * check that the whole configuration is exactly the intended one. If it is
- * not, the earlier configuration is restored and checked in the same way.
+ * check that every rule, rule group, profile and preference is exactly the
+ * intended one. If it is not, the earlier configuration is restored and
+ * checked in the same way.
  */
 export async function applyModelChange(ctx: Context, plan: (before: JsonObject) => PlannedChange, dryRun: boolean): Promise<ChangeOutcome> {
   if (dryRun) {
@@ -237,25 +308,17 @@ export async function applyModelChange(ctx: Context, plan: (before: JsonObject) 
     const { model: before, text: beforeText } = await ctx.models.fresh();
     const change = plan(before);
     const backup = await ctx.store.writeBackup(beforeText, `before-${change.tool}`);
-    const nextText = serializeModel(change.next);
-    const pending = await ctx.store.writePending(nextText);
-    try {
-      const { after, method, warnings } = await restoreVerified(ctx, {
-        tool: change.tool,
-        summary: change.summary,
-        prompt: change.prompt,
-        before,
-        beforeText,
-        backup,
-        file: pending,
-        fileSha256: sha256(nextText),
-        expected: change.next,
-        written: change.written,
-        removedRefs: change.removedRefs,
-      });
-      return { applied: true as const, after, backup: backup.name, method, warnings };
-    } finally {
-      await ctx.store.removePending(pending);
-    }
+    const restored = await restoreText(ctx, serializeModel(change.next), {
+      tool: change.tool,
+      summary: change.summary,
+      prompt: change.prompt,
+      before,
+      beforeText,
+      backup,
+      expected: change.next,
+      written: change.written,
+      removedRefs: change.removedRefs,
+    });
+    return { applied: true as const, ...restored, backup: backup.name, warnings: [...(change.warnings ?? []), ...restored.warnings] };
   });
 }
