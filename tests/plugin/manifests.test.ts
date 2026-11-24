@@ -84,8 +84,10 @@ describe('the Codex plugin', () => {
     const face = manifest['interface'] as Json;
     // The Codex plugin's server only reads; changes need a registration of the person's own.
     expect(face).toMatchObject({ displayName: 'Little Snitch', capabilities: ['Interactive', 'Read'] });
-    expect(String(face['shortDescription']).length).toBeGreaterThan(0);
+    // Its server only reads, so nothing a Codex user sees first may promise changes.
+    expect(face['shortDescription']).toBe('Read Little Snitch firewall');
     expect(String(face['shortDescription']).length).toBeLessThanOrEqual(30);
+    expect(manifest['description']).toBe('Read the Little Snitch firewall on a Mac: rules, traffic and its log. Changes need a registration of your own.');
     expect(Array.isArray(face['defaultPrompt']) && face['defaultPrompt'].length > 0).toBe(true);
   });
 
