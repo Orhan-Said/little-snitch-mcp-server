@@ -37,6 +37,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
+    "check:package": "vitest run tests/e2e/package.test.ts",
     "prepare": "npm run build",
     "prepublishOnly": "npm run typecheck && npm test",
     "version": "node scripts/sync-version.mjs",

@@ -53,6 +53,10 @@ jobs:
           fi
       - run: npm ci --ignore-scripts
       - run: npm audit --omit=dev --audit-level=moderate
+      # Packs the package, unpacks it outside the checkout and starts the server from there,
+      # as a plugin client does, before anything is staged.
+      - name: Check the packed plugin
+        run: npm run check:package
       # npm stage publish runs prepublishOnly (type-check and tests) and prepare (build) first,
       # as npm publish does. A version that is already staged makes it fail, which publishes nothing.
       - name: Stage, unless this version is already on npm

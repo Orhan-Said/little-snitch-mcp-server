@@ -24,7 +24,7 @@ describe('the built server over stdio', () => {
   let stderr = '';
 
   beforeAll(async () => {
-    execFileSync(path.join(ROOT, 'node_modules', '.bin', 'tsc'), ['-p', 'tsconfig.build.json'], { cwd: ROOT });
+    // tests/global-setup.ts has built dist/index.js.
     dir = mkdtempSync(path.join(os.tmpdir(), 'lsmcp-e2e-'));
     const fake = installFake(dir);
     stateDir = fake.stateDir;
