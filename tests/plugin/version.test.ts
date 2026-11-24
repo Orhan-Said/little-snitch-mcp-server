@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -7,6 +8,7 @@ import { syncVersion, VERSION_PIN } from '../../scripts/sync-version.mjs';
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const VERSION = (JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8')) as { version: string }).version;
+const SCRIPT = path.join(ROOT, 'scripts', 'sync-version.mjs');
 
 function markdownUnder(relativeDir: string): readonly string[] {
   const full = path.join(ROOT, relativeDir);
@@ -101,6 +103,33 @@ describe('syncVersion', () => {
     seed('0.0.1');
     expect(() => syncVersion(dir, 'latest')).toThrow(/not a version/);
     expect(read('README.md')).toContain('@0.0.1');
+  });
+
+  it('run by npm version, takes the version from package.json and stages every file it changed', () => {
+    seed('0.0.1');
+    write('package.json', json({ name: 'little-snitch-mcp-server', version: '9.9.9' }));
+    execFileSync('git', ['init', '-q'], { cwd: dir });
+    const output = execFileSync(process.execPath, [SCRIPT], { cwd: dir, encoding: 'utf8' });
+    expect(output).toContain('Version 9.9.9 written to');
+    const staged = execFileSync('git', ['diff', '--cached', '--name-only'], { cwd: dir, encoding: 'utf8' }).trim().split('\n');
+    expect(staged.sort()).toEqual(
+      [
+        '.agents/plugins/marketplace.json',
+        '.claude-plugin/marketplace.json',
+        '.claude-plugin/plugin.json',
+        '.codex-plugin/plugin.json',
+        'README.md',
+        'skills/little-snitch/references/setup.md',
+      ].sort(),
+    );
+  });
+
+  it('outside a git repository, writes the files and says to add them', () => {
+    seed('0.0.1');
+    write('package.json', json({ name: 'little-snitch-mcp-server', version: '9.9.9' }));
+    const output = execFileSync(process.execPath, [SCRIPT], { cwd: dir, encoding: 'utf8', env: { ...process.env, GIT_CEILING_DIRECTORIES: path.dirname(dir) } });
+    expect(output).toContain('Add these files to the release commit.');
+    expect(read('README.md')).toContain('@9.9.9');
   });
 
   it('refuses to run when a manifest is missing, so no release skips one', () => {

@@ -24,6 +24,9 @@ const pkg = readJson('package.json') as unknown as PackageJson;
 
 const NPM_SOURCE = { source: 'npm', package: 'little-snitch-mcp-server', version: pkg.version };
 
+/** Set by each plugin, so that a variable inherited from the person's shell cannot switch the approval off. */
+const APPROVAL_PINNED = { LITTLE_SNITCH_MCP_ELEVATION: 'auto', LITTLE_SNITCH_MCP_UNATTENDED_WRITES: 'false' };
+
 describe('the Claude Code plugin', () => {
   const manifest = readJson('.claude-plugin/plugin.json');
 
@@ -31,12 +34,12 @@ describe('the Claude Code plugin', () => {
     expect(manifest).toMatchObject({ name: 'little-snitch', version: pkg.version, skills: './skills' });
   });
 
-  it('starts the server from its own package, with changes taken from the plugin option', () => {
+  it('starts the server from its own package, with changes taken from the plugin option and the approval pinned on', () => {
     expect(manifest['mcpServers']).toEqual({
       'little-snitch': {
         command: 'node',
         args: ['${CLAUDE_PLUGIN_ROOT}/dist/index.js'],
-        env: { LITTLE_SNITCH_MCP_ALLOW: '${user_config.allow}' },
+        env: { ...APPROVAL_PINNED, LITTLE_SNITCH_MCP_ALLOW: '${user_config.allow}' },
       },
     });
   });
@@ -79,16 +82,23 @@ describe('the Codex plugin', () => {
 
   it('describes itself for the Codex plugin browser within its length limits', () => {
     const face = manifest['interface'] as Json;
-    expect(face).toMatchObject({ displayName: 'Little Snitch', capabilities: ['Interactive', 'Read', 'Write'] });
+    // The Codex plugin's server only reads; changes need a registration of the person's own.
+    expect(face).toMatchObject({ displayName: 'Little Snitch', capabilities: ['Interactive', 'Read'] });
     expect(String(face['shortDescription']).length).toBeGreaterThan(0);
     expect(String(face['shortDescription']).length).toBeLessThanOrEqual(30);
     expect(Array.isArray(face['defaultPrompt']) && face['defaultPrompt'].length > 0).toBe(true);
   });
 
-  it('starts the server from the installed plugin folder', () => {
+  it('starts the server read-only from the installed plugin folder, with the approval pinned on', () => {
     expect(readJson('.codex-plugin/mcp.json')).toEqual({
       mcpServers: {
-        'little-snitch': { command: 'node', args: ['./dist/index.js'], cwd: '.', startup_timeout_sec: 30 },
+        'little-snitch': {
+          command: 'node',
+          args: ['./dist/index.js'],
+          cwd: '.',
+          env: { ...APPROVAL_PINNED, LITTLE_SNITCH_MCP_ALLOW: '' },
+          startup_timeout_sec: 30,
+        },
       },
     });
   });

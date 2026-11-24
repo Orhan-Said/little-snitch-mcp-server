@@ -31,6 +31,8 @@
         "${CLAUDE_PLUGIN_ROOT}/dist/index.js"
       ],
       "env": {
+        "LITTLE_SNITCH_MCP_ELEVATION": "auto",
+        "LITTLE_SNITCH_MCP_UNATTENDED_WRITES": "false",
         "LITTLE_SNITCH_MCP_ALLOW": "${user_config.allow}"
       }
     }

@@ -6,6 +6,11 @@
         "./dist/index.js"
       ],
       "cwd": ".",
+      "env": {
+        "LITTLE_SNITCH_MCP_ELEVATION": "auto",
+        "LITTLE_SNITCH_MCP_UNATTENDED_WRITES": "false",
+        "LITTLE_SNITCH_MCP_ALLOW": ""
+      },
       "startup_timeout_sec": 30
     }
   }

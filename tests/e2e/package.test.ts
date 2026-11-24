@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -65,12 +65,27 @@ describe('the packed package', () => {
     execFileSync('tar', ['-xzf', path.join(work, packed.filename), '-C', work]);
     unpacked = path.join(work, 'package');
 
-    const home = path.join(work, 'home');
+    // Start it the way Codex does, from the Codex manifest in the package. The environment it
+    // inherits asks for every change without approval, which the manifest's own values must override.
+    const manifest = JSON.parse(readFileSync(path.join(unpacked, '.codex-plugin', 'mcp.json'), 'utf8')) as {
+      readonly mcpServers: Readonly<Record<string, { readonly args: readonly string[]; readonly cwd: string; readonly env: Readonly<Record<string, string>> }>>;
+    };
+    const server = manifest.mcpServers['little-snitch'];
+    if (server === undefined) {
+      throw new Error('The Codex manifest names no little-snitch server.');
+    }
+    const inherited = {
+      HOME: path.join(work, 'home'),
+      PATH: process.env['PATH'] ?? '/usr/bin:/bin',
+      LITTLE_SNITCH_MCP_ALLOW: 'all',
+      LITTLE_SNITCH_MCP_ELEVATION: 'none',
+      LITTLE_SNITCH_MCP_UNATTENDED_WRITES: 'true',
+    };
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(unpacked, 'dist', 'index.js')],
-      cwd: work,
-      env: { HOME: home, PATH: process.env['PATH'] ?? '/usr/bin:/bin' },
+      args: [...server.args],
+      cwd: path.join(unpacked, server.cwd),
+      env: { ...inherited, ...server.env },
       stderr: 'pipe',
     });
     transport.stderr?.on('data', (chunk: Buffer) => {
@@ -114,9 +129,9 @@ describe('the packed package', () => {
     expect(packed.unpackedSize).toBeLessThan(40_000_000);
   });
 
-  it('starts from the unpacked folder, read-only, and offers only the reading tools', async () => {
+  it('starts from the unpacked folder, read-only with the default root access, whatever it inherits', async () => {
     const { tools } = await client.listTools();
     expect(tools.map((tool) => tool.name).sort()).toEqual(READING_TOOLS);
-    expect(stderr).toContain('changes allowed: none (read-only)');
+    expect(stderr).toContain('root access "auto", changes allowed: none (read-only)');
   });
 });

@@ -1,11 +1,14 @@
 #!/usr/bin/env node
 // Writes the package version into every file that names it: the two plugin
 // manifests, the two marketplaces, and the install commands in the README and
-// the skill. `npm version` runs it (the "version" script in package.json), so a
-// release cannot ship a plugin that names another version.
+// the skill. `npm version` runs it as the "version" script, in the package
+// folder, and it stages the files it changed, so the commit and tag that a
+// plain `npm version` makes hold them too. A test fails if any file still
+// names another version, and prepublishOnly runs the tests.
+import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { pathToFileURL } from 'node:url';
 
 export const PACKAGE_NAME = 'little-snitch-mcp-server';
 export const VERSION_PIN = /little-snitch-mcp-server@\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?/g;
@@ -68,13 +71,25 @@ export function syncVersion(root, version) {
   return changed.map(({ file }) => file);
 }
 
+function insideGitWorkTree(root) {
+  try {
+    return execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() === 'true';
+  } catch {
+    return false;
+  }
+}
+
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+  // npm runs lifecycle scripts in the package folder.
+  const root = process.cwd();
   const { version } = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
   const changed = syncVersion(root, version);
-  process.stdout.write(
-    changed.length === 0
-      ? `Every file already names version ${version}.\n`
-      : `Version ${version} written to: ${changed.join(', ')}\nAdd these files to the release commit.\n`,
-  );
+  if (changed.length === 0) {
+    process.stdout.write(`Every file already names version ${version}.\n`);
+  } else if (insideGitWorkTree(root)) {
+    execFileSync('git', ['add', '--', ...changed], { cwd: root });
+    process.stdout.write(`Version ${version} written to and staged: ${changed.join(', ')}\n`);
+  } else {
+    process.stdout.write(`Version ${version} written to: ${changed.join(', ')}\nAdd these files to the release commit.\n`);
+  }
 }
