@@ -17,7 +17,7 @@ Lists rules. Each rule has a `ref` that `update_rule` and `remove_rule` take. A 
 - `process`: keep rules whose process path or helper contains this text, ignoring case.
 - `remote`: keep rules whose remote (domain, host, address, or a keyword such as `local-net`) contains this text.
 
-Both filters match text in the rule, not connections: `remote: "api.example.com"` does not find a domain rule for `example.com`, and neither filter finds a rule for `any` process or `any` remote unless you search for `any`.
+Both filters match text in the rule, not connections: `remote: "api.example.com"` does not find a domain rule for `example.com`, and neither filter finds a rule for `any` process or `any` remote unless you search for `any`. `process: "any"` also finds rules for any process with a trusted signature, which name no process of their own.
 - `action`: `allow`, `deny`, `ask`, or `suggestion` (a rule Little Snitch proposes that is not in force).
 - `direction`: `outgoing`, `incoming` or `both`.
 - `group`: a rule group's id or name.
@@ -111,7 +111,7 @@ Needs `rules`. Adds one rule that allows or denies connections of a process to a
 - `notes`: one line saying why the rule exists.
 - `dry_run`: when `true`, nothing changes and the result shows what would happen.
 
-Refused: a rule for any process whose remote is `any` or whose `remote_addresses` together cover every IPv4 or every IPv6 address (`0.0.0.0/0`, `::/0`, two halves such as `0.0.0.0/1` and `128.0.0.0/1`, or a range over all addresses); a rule with the same meaning as an existing one; an address, network or range the server cannot read exactly; and a remote list too long to show in the approval dialog.
+Refused: a rule for any process whose remote is `any` or whose `remote_addresses` together leave out at most 1/256 of the IPv4 or the IPv6 addresses (`0.0.0.0/0`, `::/0`, `::ffff:0:0/96`, two halves such as `0.0.0.0/1` and `128.0.0.0/1`, or a range over all addresses but a few); a rule with the same meaning as an existing one; an address, network or range the server cannot read exactly (write ranges as `a-b`, with no spaces); and a remote list too long to show in the approval dialog.
 
 ### update_rule
 
@@ -121,7 +121,7 @@ Needs `rules`. Changes the action, priority or notes of one rule.
 - `action`, `priority`, `notes` (an empty text removes the notes).
 - `dry_run`.
 
-Refused: protected and factory rules, a rule the approval dialog could not show exactly, a change that would make the rule a copy of another rule, and a change to the action or priority of a rule for any process and any remote (or every IPv4 or IPv6 address).
+Refused: protected and factory rules, a rule the approval dialog could not show exactly, a change that would make the rule a copy of another rule, and a change to the action or priority of a rule for any process whose remote is `any`, whose addresses cover all or nearly all IPv4 or IPv6 addresses, or whose addresses the server cannot all read.
 
 ### remove_rule
 

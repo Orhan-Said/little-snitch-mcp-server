@@ -99,10 +99,18 @@ describe('the little-snitch skill', () => {
     expect(page('references/setup-and-recovery.md')).toContain('one registration');
   });
 
-  it('gives Codex a display name and a starter prompt that invokes the skill', () => {
+  it('names the failure details by their place in the tool result', () => {
+    // A failed tool call returns { "error": { "kind", "message", "remedy", "details" } }.
+    for (const file of ['SKILL.md', 'references/changes.md']) {
+      expect(page(file), file).toContain('`error.details.configurationAsBefore`');
+      expect(page(file).replaceAll('error.details.', ''), file).not.toMatch(/`details\.configurationAsBefore`/);
+    }
+  });
+
+  it('gives Codex a display name, a read-only description and a starter prompt that invokes the skill', () => {
     const yaml = page('agents/openai.yaml');
     expect(yaml).toContain('display_name: "Little Snitch"');
-    expect(yaml).toMatch(/short_description: ".+"/);
+    expect(yaml).toContain('short_description: "Read Little Snitch firewall rules and traffic"');
     expect(yaml).toMatch(/default_prompt: ".*\$little-snitch.*"/);
   });
 });

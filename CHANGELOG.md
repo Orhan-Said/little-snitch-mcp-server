@@ -10,8 +10,10 @@
 
 Fixed:
 
-- `add_rule` refused a rule for any process only when its remote was the keyword `any`. It now also refuses one whose addresses cover every IPv4 or every IPv6 address, such as `0.0.0.0/0`, `::/0`, or `0.0.0.0/1` with `128.0.0.0/1`. `update_rule` no longer changes the action or priority of such a rule.
+- `add_rule` refused a rule for any process only when its remote was the keyword `any`. It now also refuses one whose addresses leave out at most 1/256 of the IPv4 or the IPv6 addresses, such as `0.0.0.0/0`, `::/0`, `::ffff:0:0/96`, `0.0.0.0/1` with `128.0.0.0/1`, or `0.0.0.0-255.255.255.254`. `update_rule` no longer changes the action or priority of such a rule, nor of a rule for any process whose addresses it cannot read, and it reads address lists separated by commas or spaces and ranges written `a - b`.
 - Addresses are read exactly. An IPv6 address must be a complete one, in full or shortened with `::`, and a range must run from its lower address to its higher one. Before, some malformed entries passed.
+- `list_rules` with `process: "any"` also finds rules for any process with a trusted signature.
+- The release workflow fails when npm already has the version, instead of reporting success for a package it did not build.
 
 ## 0.1.0 (2026-11-24)
 

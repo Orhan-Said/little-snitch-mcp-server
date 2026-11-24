@@ -49,7 +49,7 @@ A profile switch whose result the configuration does not show answers "accepted"
 
 ## Failures
 
-Every failure has a `kind`, a `message`, and often a `remedy` written for the person. Pass the remedy on in plain words.
+A failed call returns `{ "error": { "kind", "message", "remedy", "details" } }`: every failure has a `kind` and a `message`, often a `remedy` written for the person, and sometimes `details`. Pass the remedy on in plain words.
 
 | Kind | What it means | What to do |
 |---|---|---|
@@ -66,7 +66,7 @@ Every failure has a `kind`, a `message`, and often a `remedy` written for the pe
 | `busy` | Another change holds the lock. | Wait, then try once more. Never touch the lock file. |
 | `timeout` | A read did not end in time. A change that times out is reported as `verification-failed` instead. | Nothing was changed. Try once more later. |
 | `tampered` | A file changed between the approval and its use. | Stop. Nothing ran. Tell the person. |
-| `verification-failed` | A change did not end as intended. `details.configurationAsBefore` says how it ended. | See below. |
+| `verification-failed` | A change did not end as intended. `error.details.configurationAsBefore` says how it ended. | See below. |
 
 ### verification-failed
 
