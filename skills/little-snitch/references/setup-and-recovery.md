@@ -38,11 +38,11 @@ Start a new session afterwards, so the client loads the tools.
 The skill can also be used alone: copy the `skills/little-snitch` folder of the repository into the agent's skills folder (`~/.claude/skills/` for Claude Code, `~/.agents/skills/` for Codex). That installs these instructions only. Register the server yourself, pinned to a version:
 
 ```bash
-claude mcp add little-snitch -- npx -y little-snitch-mcp-server@0.1.0
+claude mcp add little-snitch -- npx -y little-snitch-mcp-server@0.2.0
 ```
 
 ```bash
-codex mcp add little-snitch -- npx -y little-snitch-mcp-server@0.1.0
+codex mcp add little-snitch -- npx -y little-snitch-mcp-server@0.2.0
 ```
 
 The version is pinned on purpose. The server can change the firewall, so a new version should run only when the person chooses it.
@@ -97,7 +97,7 @@ How the person allows changes depends on the install:
   ```
 
   ```bash
-  codex mcp add little-snitch-changes -- npx -y little-snitch-mcp-server@0.1.0 --allow rules
+  codex mcp add little-snitch-changes -- npx -y little-snitch-mcp-server@0.2.0 --allow rules
   ```
 
 - **A registration of your own:** add `--allow` and a list to the server's arguments, for example `--allow switches,rules`.

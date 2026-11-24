@@ -1,6 +1,6 @@
 {
   "name": "little-snitch",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Read and change the Little Snitch firewall on a Mac, with every change approved in the macOS administrator dialog.",
   "author": {
     "name": "Orhan Said",

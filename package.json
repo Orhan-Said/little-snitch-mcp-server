@@ -1,6 +1,6 @@
 {
   "name": "little-snitch-mcp-server",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "MCP server for the Little Snitch macOS firewall: read rules and traffic, and make guarded changes, through the official littlesnitch command-line tool.",
   "license": "MIT",
   "author": "Orhan Said",

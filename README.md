@@ -97,7 +97,7 @@ Claude Desktop, in `~/Library/Application Support/Claude/claude_desktop_config.j
   "mcpServers": {
     "little-snitch": {
       "command": "npx",
-      "args": ["-y", "little-snitch-mcp-server@0.1.0"]
+      "args": ["-y", "little-snitch-mcp-server@0.2.0"]
     }
   }
 }
@@ -106,13 +106,13 @@ Claude Desktop, in `~/Library/Application Support/Claude/claude_desktop_config.j
 Claude Code:
 
 ```bash
-claude mcp add little-snitch -- npx -y little-snitch-mcp-server@0.1.0
+claude mcp add little-snitch -- npx -y little-snitch-mcp-server@0.2.0
 ```
 
 Codex:
 
 ```bash
-codex mcp add little-snitch -- npx -y little-snitch-mcp-server@0.1.0
+codex mcp add little-snitch -- npx -y little-snitch-mcp-server@0.2.0
 ```
 
 The examples name a version on purpose. This server can change your firewall, so a new version should run only when you choose it. Without a version, `npx` may start a newer release the next time your client starts. To update, read the [changelog](CHANGELOG.md) and change the number.
@@ -162,7 +162,7 @@ By default the server offers reading tools only. The tools that change something
 For example, in the Claude Desktop config:
 
 ```json
-"args": ["-y", "little-snitch-mcp-server@0.1.0", "--allow", "switches,rules"]
+"args": ["-y", "little-snitch-mcp-server@0.2.0", "--allow", "switches,rules"]
 ```
 
 With the plugin:
@@ -176,7 +176,7 @@ With the plugin:
   ```
 
   ```bash
-  codex mcp add little-snitch-changes -- npx -y little-snitch-mcp-server@0.1.0 --allow switches,rules
+  codex mcp add little-snitch-changes -- npx -y little-snitch-mcp-server@0.2.0 --allow switches,rules
   ```
 
 Two settings remove the approval for changes. Use them only if that is what you want:
