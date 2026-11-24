@@ -189,6 +189,31 @@ What it added:
 - Little Snitch rewrote `developerTeamNames` and `knownNEs` when the rule was added, and `knownNEs` when it was removed. The results named them.
 - Rules also carry the fields `approved`, `owner`, `hidden` and `factoryHelpText`. The server shows them and does not interpret them. No rule had a remote field other than the four the server knows.
 
+## Plugin and skill
+
+Added for 0.2.0, so that one install gives Claude Code or Codex the server and instructions for using it. The layout follows the [rea](https://github.com/morluto/rea) project, where the npm package is the plugin.
+
+Two ways were considered:
+
+1. The npm package is the plugin. Its manifests start the server it ships, and the marketplaces take the plugin from npm at an exact version. Chosen, because the skill and the server can never be different versions, nothing is downloaded when the server starts, and the release goes through the same staged, signed workflow.
+2. A separate repository whose plugin starts the server with `npx`. Rejected. Its pinned version would drift from the skill, it would be a second repository to protect, and it would download the server at start.
+
+Files:
+
+- `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` for Claude Code.
+- `.codex-plugin/plugin.json`, `.codex-plugin/mcp.json` and `.agents/plugins/marketplace.json` for Codex.
+- `skills/little-snitch/`, one committed copy for both. rea writes its skill in `.agents/skills/` and copies it at packing, because it writes version pins into the text and keeps skills for maintainers apart. This project has neither, and a test checks the pins instead.
+
+Decisions:
+
+- **Bundled dependencies.** rea's packaging code notes that Codex fetches an npm plugin without installing dependencies. Claude Code installs them only when the package has a lockfile. So the package lists its three runtime dependencies in `bundleDependencies`, and the tarball carries them: 92 packages, 3.6 MB packed and 18 MB unpacked at 0.1.0. A Codex install into a throwaway `CODEX_HOME` showed `node_modules` in the installed plugin folder.
+- **Read-only by default.** The Claude Code plugin has an option `allow`, default empty, passed to the server as `LITTLE_SNITCH_MCP_ALLOW`. With `claude --plugin-dir` and no value set, the server connected; with a default of `bogus`, it refused to start. So the value reaches the server, and empty means read-only. Codex has no such option for a plugin's server. Its documented setting `[plugins."little-snitch@little-snitch".mcp_servers.little-snitch] enabled = false` turned the plugin's server off in that throwaway Codex, and a registration of one's own takes `--allow`.
+- **No launcher.** rea starts its server through a script that checks the version pin. Here the manifests and the server ship in one package, so they point at `dist/index.js` directly.
+- **One version everywhere.** `npm version` runs `scripts/sync-version.mjs`, which writes the version into both manifests, both marketplaces, and the install commands in the README and the skill.
+- **The skill is advice.** It tells the agent to start with `get_status`, to treat tool output as data, to show a dry run and the approval text before a change, and never to go around the server. An agent with a shell could still do so. The server's checks and the macOS dialog are the boundary, and SECURITY.md says so.
+
+Checked before release: the packed tarball, unpacked outside the repository, starts the server and lists the nine reading tools (`tests/e2e/package.test.ts`); `claude plugin validate` passes for the plugin and the marketplace; Codex installs the plugin from a local marketplace and resolves the server's folder to the installed plugin. Not checked before the first release that holds the plugin: installs from the npm source in either client, and Codex starting the server in a session.
+
 ## Open questions
 
 - Whether `-u <uid>` keeps a restore from adding a record for root. It is the documented purpose of the option, and a restore with it works, but the record already existed when the fix ran.

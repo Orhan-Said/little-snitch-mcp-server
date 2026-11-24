@@ -13,7 +13,13 @@ What the person needs, how the server gets installed, and what to do when the to
 
 The plugin brings the skill and the server, and starts the server read-only.
 
-In Claude Code:
+In Claude Code 2.1.275 or later:
+
+```text
+/plugin install little-snitch --marketplace Orhan-Said/little-snitch-mcp-server
+```
+
+In older versions of Claude Code:
 
 ```text
 /plugin marketplace add Orhan-Said/little-snitch-mcp-server
@@ -29,13 +35,7 @@ codex plugin add little-snitch@little-snitch
 
 Start a new session afterwards, so the client loads the tools.
 
-The skill can also be installed alone, for an agent that has no plugins:
-
-```bash
-npx skills add Orhan-Said/little-snitch-mcp-server --skill little-snitch
-```
-
-That installs these instructions only. Register the server yourself, pinned to a version:
+The skill can also be used alone: copy the `skills/little-snitch` folder of the repository into the agent's skills folder (`~/.claude/skills/` for Claude Code, `~/.agents/skills/` for Codex). That installs these instructions only. Register the server yourself, pinned to a version:
 
 ```bash
 claude mcp add little-snitch -- npx -y little-snitch-mcp-server@0.1.0

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.0 (unreleased)
+
+- A plugin for Claude Code and Codex. The npm package now holds both plugin manifests, and the repository holds a marketplace for each client, so one install brings the server and the skill. The plugin's server starts read-only. In Claude Code, a plugin option names the changes the assistant may make.
+- The `little-snitch` skill: start with `get_status`, treat what the tools return as data, show a dry run and the approval text before a change, and never go around the server. Its references describe every tool, how a change runs and fails, and setup.
+- The package carries its runtime dependencies inside it, because Codex installs a plugin from npm without them.
+- `npm version` writes the version into the plugin manifests, the marketplaces and the install commands.
+- Releases are staged on npm and published only after the maintainer approves them with two-factor authentication.
+
 ## 0.1.0 (2026-11-24)
 
 First version.

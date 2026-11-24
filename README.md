@@ -4,6 +4,8 @@ An MCP server for the [Little Snitch](https://obdev.at/littlesnitch) firewall on
 
 The server works through `littlesnitch`, the command-line tool inside the Little Snitch app. It opens no network connections of its own.
 
+It also comes as a plugin for Claude Code and Codex. The plugin brings the server and a skill: instructions that tell the agent to read the status first, to show you a dry run before a change, and never to go around the server.
+
 This is an unofficial project. It is not affiliated with Objective Development, and "Little Snitch" is their trademark.
 
 ## What you can ask
@@ -35,6 +37,7 @@ Read this before you rely on the server. Little Snitch's tool needs root and a s
 | Changing a rule, restoring a backup, switching rule groups and profiles | Against the simulator, which does on every restore what the real tool did |
 | Profiles | Against the simulator only. The real configuration had none, so their shape comes from older notes. |
 | Touch ID for sudo | Not run |
+| The Claude Code and Codex plugin | A test packs the package, unpacks it outside the repository and starts the server from there. `claude plugin validate` passes, and Claude Code 2.1.331 started the plugin's server read-only from a folder. Codex 0.170 installed it from a local marketplace into a throwaway settings folder. Installing from npm waits for the first release that holds the plugin. |
 
 The simulator follows Objective Development's documentation, the shape of a real Little Snitch 6.5 configuration, and for what that configuration did not contain, the format that the [torsday/little-snitch-mcp](https://github.com/torsday/little-snitch-mcp) project recorded from Little Snitch 6.3.3. Where your Little Snitch differs, the server reports what it could not read. It does not guess.
 
@@ -49,7 +52,43 @@ The check after a change is strict. If Little Snitch rewrites something this pro
 
 ## Install
 
-The package is on npm as [`little-snitch-mcp-server`](https://www.npmjs.com/package/little-snitch-mcp-server). Your MCP client starts it with `npx`, which downloads it the first time.
+The package is on npm as [`little-snitch-mcp-server`](https://www.npmjs.com/package/little-snitch-mcp-server). Install it as a plugin, or register it as an MCP server yourself. Use one of the two, not both: two registrations show every tool twice.
+
+### As a plugin for Claude Code or Codex
+
+The plugin starts the server from the package it was installed with, and the server starts read-only.
+
+Claude Code 2.1.275 or later:
+
+```text
+/plugin install little-snitch --marketplace Orhan-Said/little-snitch-mcp-server
+```
+
+In older versions, add the marketplace first:
+
+```text
+/plugin marketplace add Orhan-Said/little-snitch-mcp-server
+/plugin install little-snitch@little-snitch
+```
+
+Claude Code asks which changes the assistant may make. Leave the answer empty to only read. [Allowing changes](#allowing-changes) explains the values.
+
+Codex:
+
+```bash
+codex plugin marketplace add Orhan-Said/little-snitch-mcp-server
+codex plugin add little-snitch@little-snitch
+```
+
+Start a new session afterwards. Ask the assistant to "check the Little Snitch status".
+
+Both marketplaces name one exact version of the package, and Claude Code does not update third-party plugins by itself. To update, read the [changelog](CHANGELOG.md), then run `claude plugin update little-snitch@little-snitch` in Claude Code, or `codex plugin marketplace upgrade little-snitch` in Codex.
+
+To use the skill without the plugin, copy the [`skills/little-snitch`](skills/little-snitch) folder into your agent's skills folder (`~/.claude/skills/` for Claude Code, `~/.agents/skills/` for Codex) and register the server as below.
+
+### As an MCP server
+
+Your MCP client starts the server with `npx`, which downloads it the first time.
 
 Claude Desktop, in `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
@@ -68,6 +107,12 @@ Claude Code:
 
 ```bash
 claude mcp add little-snitch -- npx -y little-snitch-mcp-server@0.1.0
+```
+
+Codex:
+
+```bash
+codex mcp add little-snitch -- npx -y little-snitch-mcp-server@0.1.0
 ```
 
 The examples name a version on purpose. This server can change your firewall, so a new version should run only when you choose it. Without a version, `npx` may start a newer release the next time your client starts. To update, read the [changelog](CHANGELOG.md) and change the number.
@@ -119,6 +164,20 @@ For example, in the Claude Desktop config:
 ```json
 "args": ["-y", "little-snitch-mcp-server@0.1.0", "--allow", "switches,rules"]
 ```
+
+With the plugin:
+
+- In Claude Code, the plugin option "Changes the assistant may make" takes the same list. Claude Code asks for it when you enable the plugin. To change it later, use `/config` or `claude plugin configure little-snitch@little-snitch`, then start a new session.
+- In Codex, the plugin's server takes no options. Turn it off in `~/.codex/config.toml` and register the server yourself with `--allow`. The plugin's skill stays.
+
+  ```toml
+  [plugins."little-snitch@little-snitch".mcp_servers.little-snitch]
+  enabled = false
+  ```
+
+  ```bash
+  codex mcp add little-snitch-changes -- npx -y little-snitch-mcp-server@0.1.0 --allow switches,rules
+  ```
 
 Two settings remove the approval for changes. Use them only if that is what you want:
 
@@ -250,7 +309,8 @@ A flag wins over its environment variable. The server stops at startup if it doe
 ## Development
 
 ```bash
-npm test               # 372 tests, about 30 seconds
+npm test               # 403 tests, about 40 seconds
+npm run check:package  # packs the package and starts the server from it
 npm run typecheck
 npm run test:coverage
 ```
