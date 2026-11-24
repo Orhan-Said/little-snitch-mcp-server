@@ -8,6 +8,11 @@
 - `npm version` writes the version into the plugin manifests, the marketplaces and the install commands.
 - Releases are staged on npm and published only after the maintainer approves them with two-factor authentication.
 
+Fixed:
+
+- `add_rule` refused a rule for any process only when its remote was the keyword `any`. It now also refuses one whose addresses cover every IPv4 or every IPv6 address, such as `0.0.0.0/0`, `::/0`, or `0.0.0.0/1` with `128.0.0.0/1`. `update_rule` no longer changes the action or priority of such a rule.
+- Addresses are read exactly. An IPv6 address must be a complete one, in full or shortened with `::`, and a range must run from its lower address to its higher one. Before, some malformed entries passed.
+
 ## 0.1.0 (2026-11-24)
 
 First version.

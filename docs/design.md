@@ -213,6 +213,8 @@ Decisions:
 - **One version everywhere.** `npm version` runs `scripts/sync-version.mjs`, which writes the version into both manifests, both marketplaces, and the install commands in the README and the skill.
 - **The skill is advice.** It tells the agent to start with `get_status`, to treat tool output as data, to show a dry run and the approval text before a change, and never to go around the server. An agent with a shell could still do so. The server's checks and the macOS dialog are the boundary, and SECURITY.md says so.
 
+A review of the plugin branch found that the server refused a catch-all rule only when its remote was the keyword `any`: `add_rule` with any process and `0.0.0.0/0` plus `::/0` went through to the approval dialog. `src/model/addresses.ts` now reads every address entry as a span of numbers, and an address list whose spans cover every IPv4 or every IPv6 address counts as any remote, for `add_rule` and for the action and priority guard of `update_rule`. The same parser now decides whether an entry is an address at all, so malformed IPv6 entries and backwards ranges are refused.
+
 Checked before release: the packed tarball, unpacked outside the repository, starts the server and lists the nine reading tools (`tests/e2e/package.test.ts`); `claude plugin validate` passes for the plugin and the marketplace; Codex installs the plugin from a local marketplace and resolves the server's folder to the installed plugin. Not checked before the first release that holds the plugin: installs from the npm source in either client, and Codex starting the server in a session.
 
 ## Open questions

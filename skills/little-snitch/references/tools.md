@@ -111,7 +111,7 @@ Needs `rules`. Adds one rule that allows or denies connections of a process to a
 - `notes`: one line saying why the rule exists.
 - `dry_run`: when `true`, nothing changes and the result shows what would happen.
 
-Refused: a rule for any process and the remote `any`, a rule with the same meaning as an existing one, and a remote list too long to show in the approval dialog. The server does not refuse `any` process with `remote_addresses` of `0.0.0.0/0` or `::/0`, which covers every address just the same. Never write that.
+Refused: a rule for any process whose remote is `any` or whose `remote_addresses` together cover every IPv4 or every IPv6 address (`0.0.0.0/0`, `::/0`, two halves such as `0.0.0.0/1` and `128.0.0.0/1`, or a range over all addresses); a rule with the same meaning as an existing one; an address, network or range the server cannot read exactly; and a remote list too long to show in the approval dialog.
 
 ### update_rule
 
@@ -121,7 +121,7 @@ Needs `rules`. Changes the action, priority or notes of one rule.
 - `action`, `priority`, `notes` (an empty text removes the notes).
 - `dry_run`.
 
-Refused: protected and factory rules, a rule the approval dialog could not show exactly, a change that would make the rule a copy of another rule, and a change to the action or priority of a rule for any process and any remote.
+Refused: protected and factory rules, a rule the approval dialog could not show exactly, a change that would make the rule a copy of another rule, and a change to the action or priority of a rule for any process and any remote (or every IPv4 or IPv6 address).
 
 ### remove_rule
 

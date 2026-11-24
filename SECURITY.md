@@ -12,7 +12,7 @@ The assistant is tricked. A web page, a document or a host name can carry text t
 
 - The server starts read-only. A tool you did not name with `--allow` is not registered, so the assistant cannot call it. The Claude Code and Codex plugins start it read-only too: changes need the plugin option in Claude Code, or a registration of your own with `--allow`.
 - macOS asks you to approve each change in the administrator dialog. The prompt states the change, with the action and the remote first. Nothing the assistant reads can answer that prompt.
-- The server refuses to create a rule for any process and any remote, refuses to change the action or priority of such a rule, and refuses to touch protected and factory rules.
+- The server refuses to create a rule for any process and any remote, refuses to change the action or priority of such a rule, and refuses to touch protected and factory rules. An address list that covers every IPv4 or every IPv6 address, in one entry or several, counts as any remote.
 - It looks at Little Snitch's own switches "Allow Rule Editing" and "Allow Profile Switching" in the configuration and refuses what you switched off. A value it does not understand counts as off. This is a courtesy and not a boundary: the command-line tool runs as root and ignores the switches, and when the key is missing the server goes on and says so in the result.
 - It refuses a rule that the prompt could not show exactly: a remote list that does not fit, two remote fields, a list entry that is not text, a value that would be cut, or a path with invisible characters. So the prompt cannot hide part of a rule that is added, changed or removed.
 - The prompt for a change to a rule ends with the rule as it will be afterwards.

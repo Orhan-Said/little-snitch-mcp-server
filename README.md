@@ -253,7 +253,7 @@ An assistant that can change a firewall deserves suspicion. The server takes the
 - Before it runs the tool as root, the server checks that the file is owned by root, that nobody else can write to it, and that Objective Development signed it (team `MLZF7K7B5R`).
 - It tells the tool for which macOS user it acts (`-u`). Without that, a restore run as root adds a preferences record for the root user to your configuration.
 - It passes arguments to the tool as a list, with no shell in between. The administrator dialog is the one place that needs a shell string. There, the server quotes every word and hands the string to AppleScript as an argument.
-- It refuses to create a rule for any process and any remote, which would switch the firewall off or cut the Mac off from the network. It also refuses to change the action or the priority of such a rule.
+- It refuses to create a rule for any process and any remote, which would switch the firewall off or cut the Mac off from the network. An address list that covers every IPv4 or every IPv6 address counts as any remote: `0.0.0.0/0`, `::/0`, two halves such as `0.0.0.0/1` and `128.0.0.0/1`, or a range over all addresses. It also refuses to change the action or the priority of such a rule.
 - It refuses to change or remove protected rules and factory rules.
 - It looks at Little Snitch's own switches under Settings > Security. With "Allow Rule Editing" off for your user, it changes no rule, rule group or blocklist. With "Allow Profile Switching" off, it switches no profile. A switch with a value the server does not understand counts as off. This is a courtesy, not a barrier: the command-line tool itself is not held back by these switches. See the limits below.
 - It matches profile and group names exactly, including letter case, so a typo cannot switch a different one.
@@ -309,7 +309,7 @@ A flag wins over its environment variable. The server stops at startup if it doe
 ## Development
 
 ```bash
-npm test               # 405 tests, about 40 seconds
+npm test               # 419 tests, about 40 seconds
 npm run check:package  # packs the package and starts the server from it
 npm run typecheck
 npm run test:coverage

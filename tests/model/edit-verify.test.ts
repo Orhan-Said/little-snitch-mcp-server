@@ -37,6 +37,24 @@ describe('validateNewRule', () => {
     reject({ action: 'deny', process: 'any', remote: 'any' }, /cut the Mac off/);
   });
 
+  it('refuses a rule for any process whose addresses cover every IPv4 or IPv6 address, which is any remote by another name', () => {
+    for (const addresses of [['0.0.0.0/0'], ['::/0'], ['0.0.0.0/0', '::/0'], ['0.0.0.0/1', '128.0.0.0/1'], ['0.0.0.0-255.255.255.255'], ['10.0.0.0/8', '::/0']]) {
+      reject({ action: 'allow', process: 'any', remoteAddresses: addresses }, /every (IPv4|IPv6) address counts as any remote.*switch the firewall off/);
+      reject({ action: 'deny', process: 'any', via: CURL, remoteAddresses: addresses }, /cut the Mac off/);
+    }
+  });
+
+  it('accepts every address for one process, and part of the addresses for any process', () => {
+    expect(() => validateNewRule({ action: 'allow', process: CURL, remoteAddresses: ['0.0.0.0/0', '::/0'] })).not.toThrow();
+    expect(() => validateNewRule({ action: 'deny', process: 'any', remoteAddresses: ['0.0.0.0/1', '::/1'] })).not.toThrow();
+  });
+
+  it('refuses an IPv6 address or a range it cannot read exactly', () => {
+    for (const address of [':::', '1:2', '1::2::3', '10.0.0.9-10.0.0.1', '1.2.3.4-::1']) {
+      reject({ action: 'deny', process: CURL, remoteAddresses: [address] }, /not an IP address/);
+    }
+  });
+
   it('refuses a process that is not an executable path', () => {
     reject({ ...SPEC, process: 'Safari' }, /absolute path/);
     reject({ ...SPEC, process: '/Applications/Safari.app' }, /executable inside the app/);
@@ -164,6 +182,13 @@ describe('addRule, removeRule and updateRule', () => {
       // A note changes nothing about what the rule does.
       expect(updateRule(model, target, { notes: 'kept on purpose' }, NOW).after['notes']).toBe('kept on purpose');
     }
+    expect(isCatchAll({ action: 'deny', process: 'any', 'remote-addresses': '0.0.0.0/0' })).toBe(true);
+    expect(isCatchAll({ action: 'deny', process: 'any', 'remote-addresses': ['::/1', '8000::/1'] })).toBe(true);
+    expect(isCatchAll({ action: 'deny', requiresTrustedSignatureForAnyProcess: true, 'remote-addresses': ['0.0.0.0/0', '::/0'] })).toBe(true);
+    // A list Little Snitch might keep as one text, separated by commas.
+    expect(isCatchAll({ action: 'deny', process: 'any', 'remote-addresses': '0.0.0.0/1, 128.0.0.0/1' })).toBe(true);
+    expect(isCatchAll({ action: 'deny', process: 'any', 'remote-addresses': '10.0.0.0/8' })).toBe(false);
+    expect(isCatchAll({ action: 'deny', process: '/usr/bin/curl', 'remote-addresses': '0.0.0.0/0' })).toBe(false);
     expect(isCatchAll({ action: 'allow', process: 'any', remote: 'local-net' })).toBe(false);
     expect(isCatchAll({ action: 'allow', process: '/usr/bin/curl', remote: 'any' })).toBe(false);
     expect(isCatchAll({ action: 'allow', remote: 'any' })).toBe(false);
