@@ -57,14 +57,17 @@ jobs:
       # as a plugin client does, before anything is staged.
       - name: Check the packed plugin
         run: npm run check:package
-      # npm stage publish runs prepublishOnly (type-check and tests) and prepare (build) first,
-      # as npm publish does. A version that is already staged makes it fail, which publishes nothing.
-      - name: Stage, unless this version is already on npm
+      # A version that is on npm already was not staged by this run, so this run cannot vouch for
+      # it. The run fails instead of reporting success for a package it did not build.
+      - name: Check that this version is not on npm yet
         run: |
           name="$(node -p "require('./package.json').name")"
           version="$(node -p "require('./package.json').version")"
           if npm view "$name@$version" version >/dev/null 2>&1; then
-            echo "$name@$version is already on npm. Nothing to stage."
-            exit 0
+            echo "::error::$name@$version is already on npm, so this run stages nothing. Release a new version instead."
+            exit 1
           fi
-          npm stage publish --provenance
+      # npm stage publish runs prepublishOnly (type-check and tests) and prepare (build) first,
+      # as npm publish does. A version that is already staged makes it fail, which publishes nothing.
+      - name: Stage the version
+        run: npm stage publish --provenance
