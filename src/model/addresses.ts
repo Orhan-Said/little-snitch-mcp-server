@@ -1,7 +1,8 @@
 /**
  * Reads the entries of a rule's address list (an address, a network a/prefix,
  * or a range a-b) as spans of numbers, so that the server can tell when a list
- * covers every address of a family. Such a list is "any remote" by another name.
+ * covers all or nearly all addresses of a family. Such a list is "any remote"
+ * by another name.
  */
 
 export type AddressFamily = 'IPv4' | 'IPv6';
@@ -93,25 +94,46 @@ export function parseAddressSpan(value: string): AddressSpan | undefined {
   return single === undefined ? undefined : { family: single.family, start: single.value, end: single.value };
 }
 
-function coversWhole(spans: readonly AddressSpan[], family: AddressFamily): boolean {
-  const last = (1n << BITS[family]) - 1n;
+/** IPv4-mapped IPv6 addresses, ::ffff:0:0/96. A connection to one of them is a connection to an IPv4 address. */
+const MAPPED_START = 0xffffn << 32n;
+const MAPPED_END = MAPPED_START + (1n << 32n) - 1n;
+
+/** The IPv4 addresses inside an IPv6 span, through the mapped block, if there are any. */
+function mappedIPv4(span: AddressSpan): AddressSpan | undefined {
+  if (span.family !== 'IPv6') {
+    return undefined;
+  }
+  const start = span.start > MAPPED_START ? span.start : MAPPED_START;
+  const end = span.end < MAPPED_END ? span.end : MAPPED_END;
+  return start > end ? undefined : { family: 'IPv4', start: start - MAPPED_START, end: end - MAPPED_START };
+}
+
+/** How many addresses of the family the spans cover together, overlaps counted once. */
+function coveredCount(spans: readonly AddressSpan[], family: AddressFamily): bigint {
   const sorted = spans.filter((span) => span.family === family).sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : 0));
-  // `next` is the first address not covered yet. A span that starts after it leaves a gap.
-  const next = sorted.reduce<bigint | undefined>((reach, span) => {
-    if (reach === undefined || span.start > reach) {
-      return undefined;
-    }
-    return span.end + 1n > reach ? span.end + 1n : reach;
-  }, 0n);
-  return next !== undefined && next > last;
+  // `next` is the first address after everything counted so far.
+  const { count } = sorted.reduce(
+    (sum, span) => {
+      const from = span.start > sum.next ? span.start : sum.next;
+      return span.end < from ? sum : { count: sum.count + (span.end - from + 1n), next: span.end + 1n };
+    },
+    { count: 0n, next: 0n },
+  );
+  return count;
 }
 
 /**
- * The address families whose every address the entries cover together, in
- * the order IPv4, IPv6. Entries that are not addresses are left out; the rule
- * check refuses them before this matters.
+ * The address families that the entries cover all or nearly all of, in the
+ * order IPv4, IPv6. "Nearly all" leaves out at most 1/256 of the family, the
+ * size of an IPv4 /8: a rule for every process that reaches that far is a rule
+ * for every remote in all but name. IPv4-mapped IPv6 addresses count as IPv4.
+ * Entries that are not addresses are left out; the rule check refuses them.
  */
-export function familiesCoveredWhole(entries: readonly string[]): readonly AddressFamily[] {
-  const spans = entries.map(parseAddressSpan).filter((span): span is AddressSpan => span !== undefined);
-  return FAMILIES.filter((family) => coversWhole(spans, family));
+export function catchAllFamilies(entries: readonly string[]): readonly AddressFamily[] {
+  const parsed = entries.map(parseAddressSpan).filter((span): span is AddressSpan => span !== undefined);
+  const spans = [...parsed, ...parsed.map(mappedIPv4).filter((span): span is AddressSpan => span !== undefined)];
+  return FAMILIES.filter((family) => {
+    const size = 1n << BITS[family];
+    return size - coveredCount(spans, family) <= size >> 8n;
+  });
 }

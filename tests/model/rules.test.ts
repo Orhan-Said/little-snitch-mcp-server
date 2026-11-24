@@ -160,6 +160,14 @@ describe('filterRules', () => {
     expect(processes({ text: 'telemetry' })).toEqual([SLACK]);
   });
 
+  it('finds a rule for any process with a trusted signature when the filter asks for "any"', () => {
+    const signed = summarizeRule({ action: 'deny', requiresTrustedSignatureForAnyProcess: true, 'remote-domains': 'example.com' }, new Map());
+    const plain = summarizeRule({ action: 'deny', process: CURL, 'remote-domains': 'example.com' }, new Map());
+    expect(filterRules([signed, plain], { process: 'any' }, NOW)).toEqual([signed]);
+    expect(filterRules([signed, plain], { process: 'trusted' }, NOW)).toEqual([signed]);
+    expect(filterRules([signed, plain], { process: 'curl' }, NOW)).toEqual([plain]);
+  });
+
   it('finds rules unused for a number of days, counting never-used rules', () => {
     expect(processes({ unusedForDays: 30 })).toEqual([SLACK, 'any', CURL]);
     expect(processes({ unusedForDays: 5 })).toEqual([SAFARI, SLACK, 'any', CURL]);

@@ -37,16 +37,25 @@ describe('validateNewRule', () => {
     reject({ action: 'deny', process: 'any', remote: 'any' }, /cut the Mac off/);
   });
 
-  it('refuses a rule for any process whose addresses cover every IPv4 or IPv6 address, which is any remote by another name', () => {
-    for (const addresses of [['0.0.0.0/0'], ['::/0'], ['0.0.0.0/0', '::/0'], ['0.0.0.0/1', '128.0.0.0/1'], ['0.0.0.0-255.255.255.255'], ['10.0.0.0/8', '::/0']]) {
-      reject({ action: 'allow', process: 'any', remoteAddresses: addresses }, /every (IPv4|IPv6) address counts as any remote.*switch the firewall off/);
+  it('refuses a rule for any process whose addresses cover all or nearly all IPv4 or IPv6 addresses, which is any remote by another name', () => {
+    for (const addresses of [
+      ['0.0.0.0/0'],
+      ['::/0'],
+      ['0.0.0.0/0', '::/0'],
+      ['0.0.0.0/1', '128.0.0.0/1'],
+      ['0.0.0.0-255.255.255.255'],
+      ['10.0.0.0/8', '::/0'],
+      ['0.0.0.0-255.255.255.254'],
+      ['::ffff:0:0/96'],
+    ]) {
+      reject({ action: 'allow', process: 'any', remoteAddresses: addresses }, /covers all or nearly all (IPv4|IPv6) addresses counts as any remote.*switch the firewall off/);
       reject({ action: 'deny', process: 'any', via: CURL, remoteAddresses: addresses }, /cut the Mac off/);
     }
   });
 
   it('accepts every address for one process, and part of the addresses for any process', () => {
     expect(() => validateNewRule({ action: 'allow', process: CURL, remoteAddresses: ['0.0.0.0/0', '::/0'] })).not.toThrow();
-    expect(() => validateNewRule({ action: 'deny', process: 'any', remoteAddresses: ['0.0.0.0/1', '::/1'] })).not.toThrow();
+    expect(() => validateNewRule({ action: 'deny', process: 'any', remoteAddresses: ['0.0.0.0/1', '8000::/1'] })).not.toThrow();
   });
 
   it('refuses an IPv6 address or a range it cannot read exactly', () => {
@@ -185,9 +194,16 @@ describe('addRule, removeRule and updateRule', () => {
     expect(isCatchAll({ action: 'deny', process: 'any', 'remote-addresses': '0.0.0.0/0' })).toBe(true);
     expect(isCatchAll({ action: 'deny', process: 'any', 'remote-addresses': ['::/1', '8000::/1'] })).toBe(true);
     expect(isCatchAll({ action: 'deny', requiresTrustedSignatureForAnyProcess: true, 'remote-addresses': ['0.0.0.0/0', '::/0'] })).toBe(true);
-    // A list Little Snitch might keep as one text, separated by commas.
+    // A list Little Snitch might keep as one text, separated by commas or spaces, with ranges written "a - b".
     expect(isCatchAll({ action: 'deny', process: 'any', 'remote-addresses': '0.0.0.0/1, 128.0.0.0/1' })).toBe(true);
+    expect(isCatchAll({ action: 'deny', process: 'any', 'remote-addresses': '0.0.0.0/1 128.0.0.0/1' })).toBe(true);
+    expect(isCatchAll({ action: 'deny', process: 'any', 'remote-addresses': '0.0.0.0 - 255.255.255.255' })).toBe(true);
+    expect(isCatchAll({ action: 'deny', process: 'any', 'remote-addresses': ['0.0.0.0 - 127.255.255.255', '128.0.0.0 / 1'] })).toBe(true);
+    expect(isCatchAll({ action: 'deny', process: 'any', 'remote-addresses': '::ffff:0:0/96' })).toBe(true);
+    // An address the server cannot read: it cannot tell what the rule covers, so it treats it as a catch-all.
+    expect(isCatchAll({ action: 'deny', process: 'any', 'remote-addresses': '10.0.0.0/8 10.0.0.0/99' })).toBe(true);
     expect(isCatchAll({ action: 'deny', process: 'any', 'remote-addresses': '10.0.0.0/8' })).toBe(false);
+    expect(isCatchAll({ action: 'deny', process: 'any', 'remote-addresses': '10.0.0.0/8 192.168.0.0 - 192.168.255.255' })).toBe(false);
     expect(isCatchAll({ action: 'deny', process: '/usr/bin/curl', 'remote-addresses': '0.0.0.0/0' })).toBe(false);
     expect(isCatchAll({ action: 'allow', process: 'any', remote: 'local-net' })).toBe(false);
     expect(isCatchAll({ action: 'allow', process: '/usr/bin/curl', remote: 'any' })).toBe(false);

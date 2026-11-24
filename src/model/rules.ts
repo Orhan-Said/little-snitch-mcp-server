@@ -192,8 +192,16 @@ export interface RuleFilter {
 const contains = (haystack: string | null | undefined, needle: string): boolean =>
   (haystack ?? '').toLowerCase().includes(needle.toLowerCase());
 
+/** The process as a filter reads it. A rule for any process with a trusted signature names no process of its own. */
+function processText(rule: RuleSummary): string | null {
+  if (rule.process === null && rule.other?.['requiresTrustedSignatureForAnyProcess'] === true) {
+    return 'any process with a trusted signature';
+  }
+  return rule.process;
+}
+
 function matches(rule: RuleSummary, filter: RuleFilter, now: Date): boolean {
-  if (filter.process !== undefined && !contains(rule.process, filter.process) && !contains(rule.via, filter.process)) {
+  if (filter.process !== undefined && !contains(processText(rule), filter.process) && !contains(rule.via, filter.process)) {
     return false;
   }
   if (filter.remote !== undefined && !contains(describeRemote(rule.remote), filter.remote)) {

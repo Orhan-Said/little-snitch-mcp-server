@@ -225,7 +225,7 @@ describe('update_rule and the rules it must not produce', () => {
     for (const dryRun of [true, false]) {
       const { data } = await h.call('add_rule', { action: 'allow', process: 'any', remote_addresses: ['0.0.0.0/0', '::/0'], dry_run: dryRun });
       expect(data.error.kind).toBe('invalid-input');
-      expect(data.error.message).toContain('every IPv4 address counts as any remote');
+      expect(data.error.message).toContain('covers all or nearly all IPv4 addresses counts as any remote');
     }
     expect(commands(h)).toEqual([]);
     expect(refs(h)).toEqual(ORIGINAL_REFS);

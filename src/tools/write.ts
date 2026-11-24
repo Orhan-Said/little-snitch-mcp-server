@@ -256,7 +256,7 @@ function registerRuleTools(server: McpServer, ctx: Context): void {
       title: 'Add a firewall rule',
       description:
         'Add one Little Snitch rule that allows or denies connections of a process to a remote. Give exactly one of remote_domains, remote_hosts, remote_addresses or remote. ' +
-        'The rule applies in all profiles and is marked in its notes as added through MCP. A rule for any process and any remote is refused; addresses that cover every IPv4 or every IPv6 address (0.0.0.0/0, ::/0, or halves of them) count as any remote. A remote list too long to show in the approval prompt is refused too. ' +
+        'The rule applies in all profiles and is marked in its notes as added through MCP. A rule for any process and any remote is refused; addresses that leave out at most 1/256 of the IPv4 or IPv6 addresses (0.0.0.0/0, ::/0, ::ffff:0:0/96, or halves of them) count as any remote. A remote list too long to show in the approval prompt is refused too. ' +
         `An allow rule opens the firewall: state the exact rule to the person before calling, or call with dry_run first. A backup is saved first. ${APPROVAL}`,
       inputSchema: {
         action: z.enum(['allow', 'deny']),

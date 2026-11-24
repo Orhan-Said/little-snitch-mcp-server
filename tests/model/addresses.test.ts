@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { familiesCoveredWhole, parseAddressSpan } from '../../src/model/addresses.js';
+import { catchAllFamilies, parseAddressSpan } from '../../src/model/addresses.js';
 
 const IPV4_LAST = 2n ** 32n - 1n;
 const IPV6_LAST = 2n ** 128n - 1n;
+const IPV6_ALL_HIGH = 'ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff';
 
 describe('parseAddressSpan', () => {
   it('reads a single address as a span of one', () => {
@@ -43,6 +44,7 @@ describe('parseAddressSpan', () => {
       '1.2.3.4-::1',
       '10.0.0.9-10.0.0.1',
       '10.0.0.1-',
+      '0.0.0.0 - 255.255.255.255',
       'example.com',
       '',
     ]) {
@@ -51,35 +53,59 @@ describe('parseAddressSpan', () => {
   });
 });
 
-describe('familiesCoveredWhole', () => {
+describe('catchAllFamilies', () => {
   it('names a family that one entry covers whole', () => {
-    expect(familiesCoveredWhole(['0.0.0.0/0'])).toEqual(['IPv4']);
-    expect(familiesCoveredWhole(['::/0'])).toEqual(['IPv6']);
-    expect(familiesCoveredWhole(['0.0.0.0/0', '::/0'])).toEqual(['IPv4', 'IPv6']);
-    expect(familiesCoveredWhole(['0.0.0.0-255.255.255.255'])).toEqual(['IPv4']);
+    expect(catchAllFamilies(['0.0.0.0/0'])).toEqual(['IPv4']);
+    // ::/0 holds the IPv4-mapped block too, so it reaches every IPv4 address as well.
+    expect(catchAllFamilies(['::/0'])).toEqual(['IPv4', 'IPv6']);
+    expect(catchAllFamilies(['8000::/1'])).toEqual([]);
+    expect(catchAllFamilies(['0.0.0.0/0', '::/0'])).toEqual(['IPv4', 'IPv6']);
+    expect(catchAllFamilies(['0.0.0.0-255.255.255.255'])).toEqual(['IPv4']);
   });
 
   it('names a family that several entries cover together, in any order and overlapping', () => {
-    expect(familiesCoveredWhole(['128.0.0.0/1', '0.0.0.0/1'])).toEqual(['IPv4']);
-    expect(familiesCoveredWhole(['0.0.0.0-127.255.255.255', '128.0.0.0-255.255.255.255'])).toEqual(['IPv4']);
-    expect(familiesCoveredWhole(['0.0.0.0/2', '0.0.0.0/1', '100.0.0.0-255.255.255.255'])).toEqual(['IPv4']);
-    expect(familiesCoveredWhole(['8000::/1', '::/1'])).toEqual(['IPv6']);
+    expect(catchAllFamilies(['128.0.0.0/1', '0.0.0.0/1'])).toEqual(['IPv4']);
+    expect(catchAllFamilies(['0.0.0.0-127.255.255.255', '128.0.0.0-255.255.255.255'])).toEqual(['IPv4']);
+    expect(catchAllFamilies(['0.0.0.0/2', '0.0.0.0/1', '100.0.0.0-255.255.255.255'])).toEqual(['IPv4']);
+    expect(catchAllFamilies(['8000::/1', '::/1'])).toEqual(['IPv4', 'IPv6']);
+    expect(catchAllFamilies(['8000::/1', '4000::/2', '::/2'])).toEqual(['IPv4', 'IPv6']);
   });
 
-  it('names nothing when one address is left out', () => {
-    expect(familiesCoveredWhole(['0.0.0.0/1'])).toEqual([]);
-    expect(familiesCoveredWhole(['0.0.0.0-127.255.255.254', '128.0.0.0/1'])).toEqual([]);
-    expect(familiesCoveredWhole(['0.0.0.1-255.255.255.255'])).toEqual([]);
-    expect(familiesCoveredWhole(['0.0.0.0-255.255.255.254'])).toEqual([]);
-    expect(familiesCoveredWhole(['10.0.0.0/8', 'fe80::1', '192.168.0.0/16'])).toEqual([]);
-    expect(familiesCoveredWhole([])).toEqual([]);
+  it('names a family that is covered all but at most 1/256 of it, the size of an IPv4 /8', () => {
+    expect(catchAllFamilies(['0.0.0.0-255.255.255.254'])).toEqual(['IPv4']);
+    expect(catchAllFamilies(['0.0.0.1-255.255.255.255'])).toEqual(['IPv4']);
+    expect(catchAllFamilies(['0.0.0.0-127.255.255.254', '128.0.0.0/1'])).toEqual(['IPv4']);
+    // Exactly 0.0.0.0/8 left out.
+    expect(catchAllFamilies(['1.0.0.0-255.255.255.255'])).toEqual(['IPv4']);
+    // Exactly 1/256 of IPv6 left out.
+    expect(catchAllFamilies([`100::-${IPV6_ALL_HIGH}`])).toEqual(['IPv6']);
   });
 
-  it('does not count an IPv4 network toward IPv6, or the other way round', () => {
-    expect(familiesCoveredWhole(['0.0.0.0/0', '::/1'])).toEqual(['IPv4']);
+  it('names nothing when more than 1/256 of each family is left out', () => {
+    expect(catchAllFamilies(['1.0.0.1-255.255.255.255'])).toEqual([]);
+    expect(catchAllFamilies([`100::1-${IPV6_ALL_HIGH}`])).toEqual([]);
+    expect(catchAllFamilies(['0.0.0.0/1'])).toEqual([]);
+    expect(catchAllFamilies(['0.0.0.0/1', '128.0.0.0/2', '192.0.0.0/3'])).toEqual([]);
+    expect(catchAllFamilies(['10.0.0.0/8', 'fe80::1', '192.168.0.0/16'])).toEqual([]);
+    expect(catchAllFamilies([])).toEqual([]);
+  });
+
+  it('counts IPv4-mapped IPv6 addresses (::ffff:0:0/96) as IPv4', () => {
+    expect(catchAllFamilies(['::ffff:0:0/96'])).toEqual(['IPv4']);
+    expect(catchAllFamilies(['::ffff:0:0/97', '128.0.0.0/1'])).toEqual(['IPv4']);
+    expect(catchAllFamilies(['::ffff:0:0/96', '::/0'])).toEqual(['IPv4', 'IPv6']);
+    expect(catchAllFamilies(['::ffff:0:0/97'])).toEqual([]);
+  });
+
+  it('does not count an IPv4 network toward IPv6', () => {
+    expect(catchAllFamilies(['0.0.0.0/0', '8000::/1'])).toEqual(['IPv4']);
+  });
+
+  it('counts an IPv6 network that holds the mapped block toward IPv4', () => {
+    expect(catchAllFamilies(['::/1'])).toEqual(['IPv4']);
   });
 
   it('ignores an entry it cannot read, which the rule check refuses anyway', () => {
-    expect(familiesCoveredWhole(['not an address', '0.0.0.0/1'])).toEqual([]);
+    expect(catchAllFamilies(['not an address', '0.0.0.0/1'])).toEqual([]);
   });
 });
