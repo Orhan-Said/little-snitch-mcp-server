@@ -14,6 +14,7 @@ import { installFake } from '../helpers/harness.js';
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const ENTRY = path.join(ROOT, 'dist', 'index.js');
+const PACKAGE_VERSION = (JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8')) as { version: string }).version;
 
 /** Starts the built server the way an MCP client does: as a child process speaking over stdin and stdout. */
 describe('the built server over stdio', () => {
@@ -47,7 +48,7 @@ describe('the built server over stdio', () => {
   });
 
   it('introduces itself and says what it was started with', async () => {
-    expect(client.getServerVersion()).toMatchObject({ name: 'little-snitch-mcp-server', version: '0.1.0' });
+    expect(client.getServerVersion()).toMatchObject({ name: 'little-snitch-mcp-server', version: PACKAGE_VERSION });
     expect(stderr).toContain('root access "none", changes allowed: rules');
   });
 
@@ -90,6 +91,6 @@ describe('starting the built server', () => {
 
   it('prints its version', () => {
     const run = spawnSync(process.execPath, [ENTRY, '--version'], { encoding: 'utf8' });
-    expect(run.stdout.trim()).toBe('0.1.0');
+    expect(run.stdout.trim()).toBe(PACKAGE_VERSION);
   });
 });

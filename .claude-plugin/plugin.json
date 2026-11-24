@@ -1,0 +1,38 @@
+{
+  "name": "little-snitch",
+  "version": "0.1.0",
+  "description": "Read and change the Little Snitch firewall on a Mac, with every change approved in the macOS administrator dialog.",
+  "author": {
+    "name": "Orhan Said",
+    "url": "https://github.com/Orhan-Said"
+  },
+  "homepage": "https://github.com/Orhan-Said/little-snitch-mcp-server",
+  "repository": "https://github.com/Orhan-Said/little-snitch-mcp-server",
+  "license": "MIT",
+  "keywords": [
+    "little-snitch",
+    "firewall",
+    "macos",
+    "mcp-server"
+  ],
+  "skills": "./skills",
+  "userConfig": {
+    "allow": {
+      "type": "string",
+      "title": "Changes the assistant may make",
+      "description": "Leave empty to only read. Otherwise a comma-separated list of: switches (profiles and rule groups), rules (add, change, remove), restore (restore a backup), or all. Each change still needs your approval in the macOS administrator dialog.",
+      "default": ""
+    }
+  },
+  "mcpServers": {
+    "little-snitch": {
+      "command": "node",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/dist/index.js"
+      ],
+      "env": {
+        "LITTLE_SNITCH_MCP_ALLOW": "${user_config.allow}"
+      }
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "little-snitch": {
+      "command": "node",
+      "args": [
+        "./dist/index.js"
+      ],
+      "cwd": ".",
+      "startup_timeout_sec": 30
+    }
+  }
+}
