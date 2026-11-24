@@ -74,7 +74,7 @@ Three packages run in the server: `@modelcontextprotocol/sdk`, `zod` and `lossle
 
 ## Releases
 
-Version 0.1.0 was published to npm by hand, because npm accepts a workflow as publisher only for a package that already exists. Later versions are published by `.github/workflows/release.yml` from a `v*` tag, through npm's trusted publishing: no npm token exists, and each release carries a provenance statement that names the commit and the workflow run. To check a release you installed:
+Version 0.1.0 was published to npm by hand, because npm accepts a workflow as publisher only for a package that already exists. Later versions are built by `.github/workflows/release.yml` from a `v*` tag, through npm's trusted publishing, and no npm token exists. npm lets the workflow only stage a version. A staged version stays hidden until the maintainer approves it on npm with two-factor authentication, so a stolen GitHub account cannot release anything alone. The package also requires two-factor authentication for every publish and refuses tokens. The workflow asks for a provenance statement that names the commit and the workflow run, and fails without one. [docs/releasing.md](docs/releasing.md) has the steps. To check a release you installed:
 
 ```bash
 npm audit signatures
