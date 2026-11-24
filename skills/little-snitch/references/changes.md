@@ -34,15 +34,13 @@ Show the person the preview, or the effect, before the real call.
 
 ## The approval dialog
 
-The dialog names the change with the action and the remote first, then the process, a note if the rule has one, and the macOS user if the rule belongs to another user. For example:
-
-`Little Snitch MCP wants to ADD a firewall rule: DENY connections to the domains tracker.example for /Applications/Slack.app/Contents/MacOS/Slack.`
-
-For a change to an existing rule, the text ends with the rule as it will be. Tell the person to read it and to approve only if it matches what you told them. The dialog is outside your reach, and that is the point of it.
+The dialog names the change with the action and the remote first, then the process, then the macOS user if the rule belongs to another user, and the rule's note. Every rule `add_rule` creates carries the note `Added through MCP on <date>.`, after the person's own note if they gave one, so the note appears in the dialog too. For a change to an existing rule, the text ends with the rule as it will be. The dry run returns the exact text, so quote that instead of writing your own. Tell the person to read it and to approve only if it matches what you told them. The dialog is outside your reach, and that is the point of it.
 
 ## What a result says
 
-A change that went through has `applied: true`, the name of the backup saved before it (`backup`), and how it was approved (`approvedThrough`). It may also have:
+A change that went through has `applied: true` and how it was approved (`approvedThrough`). The rule tools also return the rule as Little Snitch now holds it and the backup saved before the change (`backup`). `restore_backup` returns the backup it restored (`restored`), the backup of the configuration it replaced (`savedBefore`), the number of rules now (`rulesNow`) and its `effect`. `set_rule_group_enabled` answers `applied: false` with `alreadyInState: true` when the group already was in that state, and then ran nothing.
+
+A result may also have:
 
 - `warnings`: things the person should know, for example that the change log could not be written, or that the server could not read one of Little Snitch's Security switches. Pass each one on.
 - `rewrittenByLittleSnitch`: sections Little Snitch changed by itself during the restore, such as `knownNEs` or `developerTeamNames`. The server does not compare them, so say that they changed.
@@ -61,24 +59,36 @@ Every failure has a `kind`, a `message`, and often a `remedy` written for the pe
 | `needs-root`, `elevation-unavailable` | The server could not get root. | Pass the remedy on. [Root access](setup-and-recovery.md#root-access) has the choices. |
 | `elevation-cancelled` | The person cancelled the dialog or the prompt. | Do not retry unless they ask. |
 | `elevation-failed`, `cli-failed`, `unexpected-output` | The tool failed or answered in a way the server does not know. | Report the message. Do not retry in a loop. |
-| `capability-disabled` | That kind of change is not allowed, or Little Snitch's own Security switch is off. | Explain how the person can allow it, and stop. |
+| `capability-disabled` | Little Snitch's own Security switch ("Allow Rule Editing" or "Allow Profile Switching") is off for this user, or could not be read. | The person switches it on in Little Snitch, Settings, Security, or makes the change in Little Snitch. A kind of change they did not allow has no tool at all. |
 | `invalid-input` | An input was wrong, the rule would copy another rule, or the dialog could not show the rule exactly (a remote list too long, invisible characters). | Read the message. Fix the input, or tell the person to change that rule in Little Snitch itself. |
 | `not-found`, `ambiguous` | A ref is stale, or a name matched nothing or more than one. | List again and use the exact ref or name. |
 | `protected` | A protected or factory rule. | The person can change it in Little Snitch itself. |
 | `busy` | Another change holds the lock. | Wait, then try once more. Never touch the lock file. |
-| `timeout` | A command did not end in time. | See below. |
+| `timeout` | A read did not end in time. A change that times out is reported as `verification-failed` instead. | Nothing was changed. Try once more later. |
 | `tampered` | A file changed between the approval and its use. | Stop. Nothing ran. Tell the person. |
-| `verification-failed` | Little Snitch did not take the change as written. | The server restored the earlier configuration. Report what differed. Do not retry the same change. |
+| `verification-failed` | A change did not end as intended. `details.configurationAsBefore` says how it ended. | See below. |
 
-### After a timeout
+### verification-failed
 
-A command that timed out may still be running as root. The server starts nothing further for that change, keeps the lock, and refuses every later change until a minute has passed and no `littlesnitch` command that changes the configuration is running. Its message says that the state is unknown and gives a command to restore the backup by hand, with the checksum the backup file must have.
+Read `details` before you tell the person anything about their firewall:
 
-Do not retry. Tell the person the state is unknown and pass the command on for them to run in their own Terminal if they choose. Do not run it yourself.
+| `configurationAsBefore` | What happened | What to tell the person |
+|---|---|---|
+| `true` | Little Snitch did not take the change, or the server undid it and checked every rule, rule group, profile and preference. `rolledBack` says which. | Nothing of the change is in effect. Report which part differed. Do not retry the same change. |
+| `false` | The change went wrong and the undo failed. | The firewall may hold part of the change. Pass on the restore command from the message. |
+| `"unknown"` | The command timed out (`cause: "timeout"`). | The change may be in effect now or later. See the next section. |
+
+Other kinds, such as `cli-failed`, can also carry `configurationAsBefore: true` when the server read the configuration again and found it unchanged.
+
+### After a change timed out
+
+The error is `verification-failed` with `configurationAsBefore: "unknown"`. The command that timed out may still be running as root, and the change may take effect after the error. The administrator dialog left open for more than five minutes ends this way too. The server starts nothing further for that change, keeps the lock, and refuses every later change until a minute has passed and no `littlesnitch` command that changes the configuration is running. Its message says that the state is unknown and gives a command to restore the backup by hand, with the checksum the backup file must have.
+
+Do not retry. Tell the person that the firewall may have changed and that the state is unknown, and pass the command on for them to run in their own Terminal if they choose. Do not run it yourself. After the wait, a fresh `list_rules` shows whether the change is in effect.
 
 ### When the undo fails too
 
-If the server cannot restore the earlier configuration, the error gives the same restore command with the backup's checksum. Pass it on and stop.
+The error is `verification-failed` with `configurationAsBefore: false`, or `"unknown"` when the undo itself timed out. The message gives the same restore command with the backup's checksum. Tell the person the firewall may hold part of the change, pass the command on, and stop.
 
 ## What the person should know
 

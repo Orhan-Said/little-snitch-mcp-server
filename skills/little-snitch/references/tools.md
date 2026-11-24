@@ -8,7 +8,7 @@ Reading tools may show a Touch ID or password prompt on the Mac, except `get_sta
 
 ### get_status
 
-Says whether Little Snitch can be reached and what the server may do: the installed version, whether "Allow access via Terminal" is on, how root access is obtained, which kinds of change are allowed, whether changes need approval, Little Snitch's Security switches (on, off, unreadable or not-found), and a to-do list for the person. No inputs. Never shows a prompt.
+Says whether Little Snitch can be reached and what the server may do: the installed version, whether "Allow access via Terminal" is on, how root access is obtained, which kinds of change are allowed, whether changes need approval, Little Snitch's Security switches (on, off, unreadable or not-found), and a to-do list for the person. No inputs. Never shows a prompt, so it never reads the configuration itself: until another tool has read it, the switches show "not read yet".
 
 ### list_rules
 
@@ -16,6 +16,8 @@ Lists rules. Each rule has a `ref` that `update_rule` and `remove_rule` take. A 
 
 - `process`: keep rules whose process path or helper contains this text, ignoring case.
 - `remote`: keep rules whose remote (domain, host, address, or a keyword such as `local-net`) contains this text.
+
+Both filters match text in the rule, not connections: `remote: "api.example.com"` does not find a domain rule for `example.com`, and neither filter finds a rule for `any` process or `any` remote unless you search for `any`.
 - `action`: `allow`, `deny`, `ask`, or `suggestion` (a rule Little Snitch proposes that is not in force).
 - `direction`: `outgoing`, `incoming` or `both`.
 - `group`: a rule group's id or name.
@@ -26,7 +28,7 @@ Lists rules. Each rule has a `ref` that `update_rule` and `remove_rule` take. A 
 
 ### list_rule_groups
 
-Lists rule groups and blocklists, whether each is on, and how many rules each holds. A group named "unknown" is a built-in group the server has no name for. It can be listed but not switched. No inputs.
+Lists rule groups and blocklists, whether each is on, and how many rules each holds. A group with `name: null` and `nameSource: "unknown"` is a built-in group the server has no name for. It can be listed but not switched. No inputs.
 
 ### list_profiles
 
@@ -109,7 +111,7 @@ Needs `rules`. Adds one rule that allows or denies connections of a process to a
 - `notes`: one line saying why the rule exists.
 - `dry_run`: when `true`, nothing changes and the result shows what would happen.
 
-Refused: a rule for any process and any remote, and a remote list too long to show in the approval dialog.
+Refused: a rule for any process and the remote `any`, a rule with the same meaning as an existing one, and a remote list too long to show in the approval dialog. The server does not refuse `any` process with `remote_addresses` of `0.0.0.0/0` or `::/0`, which covers every address just the same. Never write that.
 
 ### update_rule
 

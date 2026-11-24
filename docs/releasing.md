@@ -8,9 +8,9 @@ How a new version reaches npm. The workflow builds and stages it, and only the m
    npm version 0.1.1 --no-git-tag-version
    ```
 
-   This writes the version into `package.json` and `package-lock.json`. Then `scripts/sync-version.mjs` writes it into both plugin manifests, both marketplaces, and the install commands in the README and the skill, and prints the files it changed. A test fails when any of them names another version.
+   This writes the version into `package.json` and `package-lock.json`. Then `scripts/sync-version.mjs` writes it into both plugin manifests, both marketplaces, and the install commands in the README and the skill, stages those files and prints their names. A test fails when any of them names another version.
 
-   Add every changed file to the release commit.
+   Add `package.json`, `package-lock.json` and `CHANGELOG.md` to the same commit.
 
 2. Commit, push to `main`, and wait until CI passes.
 3. Tag that commit and push the tag. A tag cannot be moved or deleted afterwards, so tag only a commit whose CI passed.

@@ -309,7 +309,7 @@ A flag wins over its environment variable. The server stops at startup if it doe
 ## Development
 
 ```bash
-npm test               # 403 tests, about 40 seconds
+npm test               # 405 tests, about 40 seconds
 npm run check:package  # packs the package and starts the server from it
 npm run typecheck
 npm run test:coverage
