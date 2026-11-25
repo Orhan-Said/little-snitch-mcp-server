@@ -19,7 +19,9 @@ npm access set mfa=publish little-snitch-mcp-server
 Check both:
 
 - `npm trust list little-snitch-mcp-server` shows one GitHub publisher for `Orhan-Said/little-snitch-mcp-server`, workflow `release.yml`, environment `npm`, allowed to stage only.
-- The package's access page on npmjs.com, under Publishing access, has "Require two-factor authentication and disallow tokens" selected. npm has no command that reads this setting back.
+- The package's access page on npmjs.com, under Publishing access, has "Require two-factor authentication and disallow bypass 2fa tokens" selected. npm has no command that reads this setting back.
+
+A new trusted publisher shows "Pending validation" until the workflow uses it, with a deadline 48 hours after it was created (for this package, 2026-11-27 00:23 UTC). Whether a staged release counts as the publish npm asks for has not been seen yet. If the deadline passes before a release, look at the access page, and if npm removed the publisher or marked it invalid, create it again with the command above.
 
 ## Each release
 
@@ -86,7 +88,7 @@ Check both:
 ## What protects a release
 
 - npm trusts one publisher for the package: GitHub Actions, repository `Orhan-Said/little-snitch-mcp-server`, workflow `release.yml`, environment `npm`, allowed to stage and not to publish. This holds once the first setting above is made.
-- The package's access setting on npm requires two-factor authentication for every publish and refuses tokens. This holds once the second setting above is made.
+- The package's access setting on npm requires two-factor authentication for every publish and refuses tokens that bypass it. This holds once the second setting above is made.
 - The `npm` environment on GitHub accepts only `v*` tags, and tags cannot be moved or deleted.
 - The workflow uses only GitHub's own actions, each pinned to a commit, and no cache. It fails when npm already has the version, so it never reports success for a package it did not build.
 - `main` names a version in its marketplaces only after npm has it.
