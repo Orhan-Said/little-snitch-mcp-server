@@ -220,6 +220,27 @@ describe('update_rule and the rules it must not produce', () => {
     expect(data.applied).toBe(true);
   });
 
+  it('refuses to add a rule for any process and every address, and runs nothing for it', async () => {
+    const h = await start();
+    for (const dryRun of [true, false]) {
+      const { data } = await h.call('add_rule', { action: 'allow', process: 'any', remote_addresses: ['0.0.0.0/0', '::/0'], dry_run: dryRun });
+      expect(data.error.kind).toBe('invalid-input');
+      expect(data.error.message).toContain('covers all or nearly all IPv4 addresses counts as any remote');
+    }
+    expect(commands(h)).toEqual([]);
+    expect(refs(h)).toEqual(ORIGINAL_REFS);
+  });
+
+  it('does not turn a deny rule for any process and every address into allow', async () => {
+    const catchAll = '{ "action": "deny", "origin": "frontend", "uid": 501, "process": "any", "remote-addresses": ["0.0.0.0/0", "::/0"] }';
+    const h = await start({ modelText: sampleModelText().replace('"rules": [', `"rules": [\n    ${catchAll},`) });
+    const target = refs(h)[0];
+    const { data } = await h.call('update_rule', { ref: target, action: 'allow' });
+    expect(data.error.kind).toBe('invalid-input');
+    expect(data.error.message).toContain('This server does not change the action or the priority of such a rule');
+    expect(refs(h)[0]).toBe(target);
+  });
+
   it('does not turn a deny rule for any process and any remote into allow, the rule add_rule refuses to create', async () => {
     const catchAll = '{ "action": "deny", "origin": "frontend", "uid": 501, "process": "any", "remote": "any" }';
     const h = await start({ modelText: sampleModelText().replace('"rules": [', `"rules": [\n    ${catchAll},`) });

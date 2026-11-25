@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { LittleSnitchError } from '../errors.js';
+import { catchAllFamilies, parseAddressSpan } from './addresses.js';
 import { detectEncoding, encodeDate, type DateEncoding } from './dates.js';
 import { asBoolean, asString, isObject, numberValue, rawRules, rulesOf, type JsonObject, type JsonValue } from './json.js';
 import { ruleRef } from './rules.js';
@@ -30,8 +31,6 @@ export interface RulePatch {
 }
 
 const HOSTNAME = /^(?=.{1,253}$)([a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9_])?)(\.[a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9_])?)*$/;
-const IPV4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
-const IPV6 = /^[0-9a-f:]{2,39}$/i;
 
 /** Control and formatting characters. In a path or a note they can hide or reorder what an approval prompt shows. */
 const HIDDEN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
@@ -56,24 +55,43 @@ function assertExecutablePath(kind: string, value: string): void {
   }
 }
 
-function isAddress(value: string): boolean {
-  const single = (text: string): boolean => {
-    const v4 = IPV4.exec(text);
-    if (v4 !== null) {
-      return v4.slice(1).every((part) => Number(part) <= 255);
-    }
-    return IPV6.test(text) && text.includes(':');
-  };
-  if (value.includes('/')) {
-    const [address, prefix, ...rest] = value.split('/');
-    const bits = Number(prefix);
-    return rest.length === 0 && address !== undefined && single(address) && /^\d{1,3}$/.test(prefix ?? '') && bits <= (address.includes(':') ? 128 : 32);
+/**
+ * An address list as Little Snitch may keep it: one text, a list of texts, or
+ * a text of entries separated by commas or spaces, with ranges written "a - b"
+ * as its help shows them.
+ */
+function addressEntries(value: JsonValue | undefined): readonly string[] {
+  const texts = typeof value === 'string' ? [value] : Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
+  return texts
+    .map((text) => text.replace(/\s*-\s*/g, '-').replace(/\s*\/\s*/g, '/'))
+    .flatMap((text) => text.split(/[\s,]+/))
+    .filter((entry) => entry !== '');
+}
+
+/** The sentence that says why an address list is a catch-all, or undefined when it is not one. */
+function wholeFamilySentence(entries: readonly string[]): string | undefined {
+  const [family] = catchAllFamilies(entries);
+  return family === undefined ? undefined : `A list that covers all or nearly all ${family} addresses counts as any remote.`;
+}
+
+/**
+ * Why an existing rule counts as a rule for every process and every remote,
+ * or undefined when it does not. A rule for any process whose addresses the
+ * server cannot all read counts too: it cannot tell what that rule covers.
+ */
+function catchAllReason(rule: JsonObject): string | undefined {
+  const anyProcess = asString(rule['process']) === 'any' || (rule['process'] === undefined && asBoolean(rule['requiresTrustedSignatureForAnyProcess']) === true);
+  if (!anyProcess) {
+    return undefined;
   }
-  if (value.includes('-')) {
-    const [from, to, ...rest] = value.split('-');
-    return rest.length === 0 && from !== undefined && to !== undefined && single(from) && single(to);
+  if (asString(rule['remote']) === 'any') {
+    return '';
   }
-  return single(value);
+  const entries = addressEntries(rule['remote-addresses']);
+  if (entries.some((entry) => parseAddressSpan(entry) === undefined)) {
+    return 'This rule is for any process, and this server cannot read all of its addresses, so it cannot tell whether the rule covers every address.';
+  }
+  return wholeFamilySentence(entries);
 }
 
 function assertPorts(ports: string): void {
@@ -116,13 +134,16 @@ export function validateNewRule(spec: NewRuleSpec): void {
     if (spec.remoteAddresses.length === 0 || spec.remoteAddresses.length > 200) {
       throw invalid('remote_addresses must list between 1 and 200 addresses.');
     }
-    const bad = spec.remoteAddresses.find((address) => !isAddress(address));
+    const bad = spec.remoteAddresses.find((address) => parseAddressSpan(address) === undefined);
     if (bad !== undefined) {
       throw invalid(`"${bad}" in remote_addresses is not an IP address, a range (a-b) or a network (a/prefix).`);
     }
   }
-  if (spec.process === 'any' && spec.remote === 'any') {
-    throw invalid(`${CATCH_ALL} This server does not create it; make such a rule in Little Snitch itself.`);
+  if (spec.process === 'any') {
+    const wholeFamily = spec.remoteAddresses === undefined ? undefined : wholeFamilySentence(spec.remoteAddresses);
+    if (spec.remote === 'any' || wholeFamily !== undefined) {
+      throw invalid(`${wholeFamily === undefined ? '' : `${wholeFamily} `}${CATCH_ALL} This server does not create it; make such a rule in Little Snitch itself.`);
+    }
   }
   if (spec.ports !== undefined) {
     assertPorts(spec.ports);
@@ -195,10 +216,9 @@ export function findRule(model: JsonObject, ref: string): { readonly index: numb
   throw new LittleSnitchError('not-found', `No rule has the reference ${ref}. Rules may have changed; list them again.`);
 }
 
-/** True for a rule that covers every process and every remote. */
+/** True for a rule that covers every process and every remote, all or nearly all addresses of a family, or addresses the server cannot read. */
 export function isCatchAll(rule: JsonObject): boolean {
-  const anyProcess = asString(rule['process']) === 'any' || (rule['process'] === undefined && asBoolean(rule['requiresTrustedSignatureForAnyProcess']) === true);
-  return anyProcess && asString(rule['remote']) === 'any';
+  return catchAllReason(rule) !== undefined;
 }
 
 function assertEditable(rule: JsonObject, ref: string): void {
@@ -232,8 +252,9 @@ export function updateRule(
   if (Object.keys(changes).length === 0) {
     throw invalid('Nothing to change: the rule already has these values.');
   }
-  if (isCatchAll(rule) && (changes['action'] !== undefined || changes['priority'] !== undefined)) {
-    throw invalid(`${CATCH_ALL} This server does not change the action or the priority of such a rule; do it in Little Snitch itself.`);
+  const catchAll = catchAllReason(rule);
+  if (catchAll !== undefined && (changes['action'] !== undefined || changes['priority'] !== undefined)) {
+    throw invalid(`${CATCH_ALL} ${catchAll === '' ? '' : `${catchAll} `}This server does not change the action or the priority of such a rule; do it in Little Snitch itself.`);
   }
   const encoding = detectEncoding(rule['modificationDate']);
   const merged: JsonObject = {

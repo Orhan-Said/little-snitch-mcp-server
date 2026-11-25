@@ -1,9 +1,12 @@
 name: Release
 
-# Publishes the package to npm when a version tag such as v0.1.1 is pushed.
+# Stages the package on npm when a version tag such as v0.1.1 is pushed.
 # npm trusts this workflow through OIDC (trusted publishing): no npm token is
-# stored anywhere, and each release gets a provenance statement that ties it
-# to the commit and the workflow run that built it.
+# stored anywhere. npm lets this workflow only stage a version, never publish
+# one: a staged version stays hidden until the maintainer approves it with
+# two-factor authentication (`npm stage approve <id>`, see docs/releasing.md).
+# The workflow asks for a provenance statement that ties the release to the
+# commit and the workflow run that built it, and fails without one.
 
 on:
   push:
@@ -17,7 +20,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish:
+  stage:
     runs-on: macos-latest
     timeout-minutes: 30
     # The environment accepts only v* tags, and npm accepts only this workflow in this environment.
@@ -42,22 +45,29 @@ jobs:
             echo "::error::The tag is $GITHUB_REF_NAME, but package.json says $expected."
             exit 1
           fi
-      - name: Check that npm can publish with trusted publishing (11.5.1 or newer)
+      - name: Check that this npm can stage a release
         run: |
-          node -e '
-            const [major, minor, patch] = process.argv[1].split(".").map(Number);
-            const ok = major > 11 || (major === 11 && (minor > 5 || (minor === 5 && patch >= 1)));
-            if (!ok) { console.error(`npm ${process.argv[1]} is older than 11.5.1.`); process.exit(1); }
-          ' "$(npm --version)"
+          if ! npm stage --help >/dev/null 2>&1; then
+            echo "::error::npm $(npm --version) has no stage command."
+            exit 1
+          fi
       - run: npm ci --ignore-scripts
       - run: npm audit --omit=dev --audit-level=moderate
-      # npm publish runs prepublishOnly (type-check and tests) and prepare (build) first.
-      - name: Publish, unless this version is already on npm
+      # Packs the package, unpacks it outside the checkout and starts the server from there,
+      # as a plugin client does, before anything is staged.
+      - name: Check the packed plugin
+        run: npm run check:package
+      # A version that is on npm already was not staged by this run, so this run cannot vouch for
+      # it. The run fails instead of reporting success for a package it did not build.
+      - name: Check that this version is not on npm yet
         run: |
           name="$(node -p "require('./package.json').name")"
           version="$(node -p "require('./package.json').version")"
           if npm view "$name@$version" version >/dev/null 2>&1; then
-            echo "$name@$version is already on npm. Nothing to publish."
-            exit 0
+            echo "::error::$name@$version is already on npm, so this run stages nothing. Release a new version instead."
+            exit 1
           fi
-          npm publish
+      # npm stage publish runs prepublishOnly (type-check and tests) and prepare (build) first,
+      # as npm publish does. A version that is already staged makes it fail, which publishes nothing.
+      - name: Stage the version
+        run: npm stage publish --provenance

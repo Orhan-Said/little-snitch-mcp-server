@@ -1,0 +1,4 @@
+interface:
+  display_name: "Little Snitch"
+  short_description: "Read Little Snitch firewall rules and traffic"
+  default_prompt: "Use $little-snitch to check the firewall status and show what was blocked in the last hour."

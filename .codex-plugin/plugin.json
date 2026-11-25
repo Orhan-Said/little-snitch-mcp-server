@@ -1,0 +1,37 @@
+{
+  "name": "little-snitch",
+  "version": "0.2.0",
+  "description": "Read the Little Snitch firewall on a Mac: rules, traffic and its log. Changes need a registration of your own.",
+  "author": {
+    "name": "Orhan Said",
+    "url": "https://github.com/Orhan-Said"
+  },
+  "homepage": "https://github.com/Orhan-Said/little-snitch-mcp-server",
+  "repository": "https://github.com/Orhan-Said/little-snitch-mcp-server",
+  "license": "MIT",
+  "keywords": [
+    "little-snitch",
+    "firewall",
+    "macos",
+    "mcp-server"
+  ],
+  "skills": "./skills",
+  "mcpServers": "./.codex-plugin/mcp.json",
+  "interface": {
+    "displayName": "Little Snitch",
+    "shortDescription": "Read Little Snitch firewall",
+    "longDescription": "Ask which apps connect where, why a connection is blocked, and which rules apply. The plugin's server only reads. To let the assistant add, change and remove rules or switch profiles, register the server yourself with --allow, as the README explains; each change is then approved in the macOS administrator dialog, and a backup is saved first.",
+    "developerName": "Orhan Said",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Read"
+    ],
+    "websiteURL": "https://github.com/Orhan-Said/little-snitch-mcp-server",
+    "defaultPrompt": [
+      "Use Little Snitch to show which hosts this app connected to today.",
+      "Use Little Snitch to find out why this connection is blocked.",
+      "Use Little Snitch to check the firewall status."
+    ]
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "little-snitch",
+  "interface": {
+    "displayName": "Little Snitch"
+  },
+  "plugins": [
+    {
+      "name": "little-snitch",
+      "source": {
+        "source": "npm",
+        "package": "little-snitch-mcp-server",
+        "version": "0.2.0"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

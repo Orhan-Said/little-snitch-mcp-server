@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -14,6 +14,7 @@ import { installFake } from '../helpers/harness.js';
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const ENTRY = path.join(ROOT, 'dist', 'index.js');
+const PACKAGE_VERSION = (JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8')) as { version: string }).version;
 
 /** Starts the built server the way an MCP client does: as a child process speaking over stdin and stdout. */
 describe('the built server over stdio', () => {
@@ -23,7 +24,7 @@ describe('the built server over stdio', () => {
   let stderr = '';
 
   beforeAll(async () => {
-    execFileSync(path.join(ROOT, 'node_modules', '.bin', 'tsc'), ['-p', 'tsconfig.build.json'], { cwd: ROOT });
+    // tests/global-setup.ts has built dist/index.js.
     dir = mkdtempSync(path.join(os.tmpdir(), 'lsmcp-e2e-'));
     const fake = installFake(dir);
     stateDir = fake.stateDir;
@@ -47,7 +48,7 @@ describe('the built server over stdio', () => {
   });
 
   it('introduces itself and says what it was started with', async () => {
-    expect(client.getServerVersion()).toMatchObject({ name: 'little-snitch-mcp-server', version: '0.1.0' });
+    expect(client.getServerVersion()).toMatchObject({ name: 'little-snitch-mcp-server', version: PACKAGE_VERSION });
     expect(stderr).toContain('root access "none", changes allowed: rules');
   });
 
@@ -90,6 +91,6 @@ describe('starting the built server', () => {
 
   it('prints its version', () => {
     const run = spawnSync(process.execPath, [ENTRY, '--version'], { encoding: 'utf8' });
-    expect(run.stdout.trim()).toBe('0.1.0');
+    expect(run.stdout.trim()).toBe(PACKAGE_VERSION);
   });
 });

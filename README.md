@@ -4,6 +4,8 @@ An MCP server for the [Little Snitch](https://obdev.at/littlesnitch) firewall on
 
 The server works through `littlesnitch`, the command-line tool inside the Little Snitch app. It opens no network connections of its own.
 
+It also comes as a plugin for Claude Code and Codex. The plugin brings the server and a skill: instructions that tell the agent to read the status first, to show you a dry run before a change, and never to go around the server.
+
 This is an unofficial project. It is not affiliated with Objective Development, and "Little Snitch" is their trademark.
 
 ## What you can ask
@@ -35,6 +37,7 @@ Read this before you rely on the server. Little Snitch's tool needs root and a s
 | Changing a rule, restoring a backup, switching rule groups and profiles | Against the simulator, which does on every restore what the real tool did |
 | Profiles | Against the simulator only. The real configuration had none, so their shape comes from older notes. |
 | Touch ID for sudo | Not run |
+| The Claude Code and Codex plugin | A test packs the package, unpacks it outside the repository and starts the server from there. `claude plugin validate` passes, and Claude Code 2.1.331 started the plugin's server read-only from a folder. Codex 0.170 installed it from a local marketplace into a throwaway settings folder. After 0.2.0 was published, both clients installed it from npm through the branch's marketplace, each in a throwaway settings folder: both kept the bundled dependencies, Claude Code's health check connected to the plugin's server, and the server started read-only from Codex's install. A model session calling a tool through the plugin was not run. |
 
 The simulator follows Objective Development's documentation, the shape of a real Little Snitch 6.5 configuration, and for what that configuration did not contain, the format that the [torsday/little-snitch-mcp](https://github.com/torsday/little-snitch-mcp) project recorded from Little Snitch 6.3.3. Where your Little Snitch differs, the server reports what it could not read. It does not guess.
 
@@ -49,7 +52,43 @@ The check after a change is strict. If Little Snitch rewrites something this pro
 
 ## Install
 
-The package is on npm as [`little-snitch-mcp-server`](https://www.npmjs.com/package/little-snitch-mcp-server). Your MCP client starts it with `npx`, which downloads it the first time.
+The package is on npm as [`little-snitch-mcp-server`](https://www.npmjs.com/package/little-snitch-mcp-server). Install it as a plugin, or register it as an MCP server yourself. Use one of the two, not both: two registrations show every tool twice.
+
+### As a plugin for Claude Code or Codex
+
+The plugin starts the server from the package it was installed with, and the server starts read-only.
+
+Claude Code 2.1.275 or later:
+
+```text
+/plugin install little-snitch --marketplace Orhan-Said/little-snitch-mcp-server
+```
+
+In older versions, add the marketplace first:
+
+```text
+/plugin marketplace add Orhan-Said/little-snitch-mcp-server
+/plugin install little-snitch@little-snitch
+```
+
+Claude Code asks which changes the assistant may make. Leave the answer empty to only read. [Allowing changes](#allowing-changes) explains the values.
+
+Codex:
+
+```bash
+codex plugin marketplace add Orhan-Said/little-snitch-mcp-server
+codex plugin add little-snitch@little-snitch
+```
+
+Start a new session afterwards. Ask the assistant to "check the Little Snitch status".
+
+Both marketplaces name one exact version of the package, and Claude Code does not update third-party plugins by itself. To update, read the [changelog](CHANGELOG.md), then run `claude plugin update little-snitch@little-snitch` in Claude Code, or `codex plugin marketplace upgrade little-snitch` in Codex.
+
+To use the skill without the plugin, copy the [`skills/little-snitch`](skills/little-snitch) folder into your agent's skills folder (`~/.claude/skills/` for Claude Code, `~/.agents/skills/` for Codex) and register the server as below.
+
+### As an MCP server
+
+Your MCP client starts the server with `npx`, which downloads it the first time.
 
 Claude Desktop, in `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
@@ -58,7 +97,7 @@ Claude Desktop, in `~/Library/Application Support/Claude/claude_desktop_config.j
   "mcpServers": {
     "little-snitch": {
       "command": "npx",
-      "args": ["-y", "little-snitch-mcp-server@0.1.0"]
+      "args": ["-y", "little-snitch-mcp-server@0.2.0"]
     }
   }
 }
@@ -67,7 +106,13 @@ Claude Desktop, in `~/Library/Application Support/Claude/claude_desktop_config.j
 Claude Code:
 
 ```bash
-claude mcp add little-snitch -- npx -y little-snitch-mcp-server@0.1.0
+claude mcp add little-snitch -- npx -y little-snitch-mcp-server@0.2.0
+```
+
+Codex:
+
+```bash
+codex mcp add little-snitch -- npx -y little-snitch-mcp-server@0.2.0
 ```
 
 The examples name a version on purpose. This server can change your firewall, so a new version should run only when you choose it. Without a version, `npx` may start a newer release the next time your client starts. To update, read the [changelog](CHANGELOG.md) and change the number.
@@ -117,8 +162,22 @@ By default the server offers reading tools only. The tools that change something
 For example, in the Claude Desktop config:
 
 ```json
-"args": ["-y", "little-snitch-mcp-server@0.1.0", "--allow", "switches,rules"]
+"args": ["-y", "little-snitch-mcp-server@0.2.0", "--allow", "switches,rules"]
 ```
+
+With the plugin:
+
+- In Claude Code, the plugin option "Changes the assistant may make" takes the same list. Claude Code asks for it when you enable the plugin. To change it later, use `/config` or `claude plugin configure little-snitch@little-snitch`, then start a new session.
+- In Codex, the plugin's server takes no options. Turn it off in `~/.codex/config.toml` and register the server yourself with `--allow`. The plugin's skill stays.
+
+  ```toml
+  [plugins."little-snitch@little-snitch".mcp_servers.little-snitch]
+  enabled = false
+  ```
+
+  ```bash
+  codex mcp add little-snitch-changes -- npx -y little-snitch-mcp-server@0.2.0 --allow switches,rules
+  ```
 
 Two settings remove the approval for changes. Use them only if that is what you want:
 
@@ -194,7 +253,7 @@ An assistant that can change a firewall deserves suspicion. The server takes the
 - Before it runs the tool as root, the server checks that the file is owned by root, that nobody else can write to it, and that Objective Development signed it (team `MLZF7K7B5R`).
 - It tells the tool for which macOS user it acts (`-u`). Without that, a restore run as root adds a preferences record for the root user to your configuration.
 - It passes arguments to the tool as a list, with no shell in between. The administrator dialog is the one place that needs a shell string. There, the server quotes every word and hands the string to AppleScript as an argument.
-- It refuses to create a rule for any process and any remote, which would switch the firewall off or cut the Mac off from the network. It also refuses to change the action or the priority of such a rule.
+- It refuses to create a rule for any process and any remote, which would switch the firewall off or cut the Mac off from the network. An address list that leaves out at most 1/256 of the IPv4 or the IPv6 addresses counts as any remote: `0.0.0.0/0`, `::/0`, two halves such as `0.0.0.0/1` and `128.0.0.0/1`, or a range over all addresses but a few. IPv4-mapped IPv6 addresses (`::ffff:0:0/96`) count as IPv4. It also refuses to change the action or the priority of such a rule, or of a rule for any process whose addresses it cannot read.
 - It refuses to change or remove protected rules and factory rules.
 - It looks at Little Snitch's own switches under Settings > Security. With "Allow Rule Editing" off for your user, it changes no rule, rule group or blocklist. With "Allow Profile Switching" off, it switches no profile. A switch with a value the server does not understand counts as off. This is a courtesy, not a barrier: the command-line tool itself is not held back by these switches. See the limits below.
 - It matches profile and group names exactly, including letter case, so a typo cannot switch a different one.
@@ -250,7 +309,8 @@ A flag wins over its environment variable. The server stops at startup if it doe
 ## Development
 
 ```bash
-npm test               # 372 tests, about 30 seconds
+npm test               # 424 tests, about 40 seconds
+npm run check:package  # packs the package and starts the server from it
 npm run typecheck
 npm run test:coverage
 ```

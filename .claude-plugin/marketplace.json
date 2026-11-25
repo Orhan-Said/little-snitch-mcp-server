@@ -1,0 +1,21 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "little-snitch",
+  "description": "Read and change the Little Snitch firewall on a Mac, with every change approved in the macOS administrator dialog.",
+  "owner": {
+    "name": "Orhan Said",
+    "url": "https://github.com/Orhan-Said"
+  },
+  "plugins": [
+    {
+      "name": "little-snitch",
+      "description": "Read and change the Little Snitch firewall on a Mac, with every change approved in the macOS administrator dialog.",
+      "source": {
+        "source": "npm",
+        "package": "little-snitch-mcp-server",
+        "version": "0.2.0"
+      },
+      "category": "security"
+    }
+  ]
+}
